@@ -135,7 +135,7 @@ export default function HomePage() {
     {
       question: 'Are my PDF files processed locally or on a server?',
       answer:
-        'Most operations (26 of our 30 tools) run completely inside your web browser’s memory using client-side WebAssembly, meaning files never leave your device. A small subset of specialized tools (like Ghostscript stream compression) process files in isolated, temporary server containers that are permanently deleted immediately after processing.',
+        'Most tools execute directly inside your web browser using modern client-side processing, meaning your documents never leave your device. Specialized tasks requiring dedicated processing (such as high-ratio file compression and document structure repair) execute in isolated temporary environments and are permanently deleted immediately after processing.',
     },
     {
       question: 'How can I find all available PDF tools?',
@@ -339,7 +339,7 @@ export default function HomePage() {
                 Privacy & Document Security
               </h2>
               <p className="text-xs text-[#71717A] dark:text-[#A1A1AA]">
-                Transparent processing architecture designed to protect your data.
+                Transparent document handling designed to protect your data.
               </p>
             </div>
           </div>
@@ -347,24 +347,24 @@ export default function HomePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs text-[#52525B] dark:text-[#D4D4D8] leading-relaxed">
             <div className="p-5 bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-xl space-y-2">
               <h3 className="font-bold text-sm text-[#18181B] dark:text-[#FAFAFA]">
-                Local Browser Execution
+                Private In-Browser Processing
               </h3>
               <p>
-                The majority of PDFNestly tools (such as merging, splitting,
-                annotating, page rotation, and image conversion) run locally
-                inside your web browser using WebAssembly. Your files never leave
-                your device during these operations.
+                The vast majority of PDFNestly tools (such as merging, splitting,
+                annotating, page rotation, and image conversion) execute locally
+                inside your web browser. Your files never leave your computer or
+                mobile device during these operations.
               </p>
             </div>
 
             <div className="p-5 bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-xl space-y-2">
               <h3 className="font-bold text-sm text-[#18181B] dark:text-[#FAFAFA]">
-                Ephemeral Server Processing
+                Secure Ephemeral Processing
               </h3>
               <p>
-                For tools that require server-side engines (like high-ratio
+                For tasks requiring dedicated processing (such as high-ratio
                 stream compression and document repair), files are handled in
-                isolated temporary directories and permanently removed
+                isolated temporary environments and permanently deleted
                 immediately after the operation finishes.
               </p>
             </div>

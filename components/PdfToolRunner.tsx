@@ -989,7 +989,7 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           <span>{tool.privacyDisclosure}</span>
         </div>
         <div className="font-mono text-[#52525B] dark:text-[#D4D4D8]">
-          Engine: <strong className="text-[#18181B] dark:text-[#FAFAFA]">{tool.engineLabel}</strong>
+          Mode: <strong className="text-[#18181B] dark:text-[#FAFAFA]">{tool.engineLabel}</strong>
         </div>
       </div>
 
@@ -2401,7 +2401,7 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
                     ? `Input: ${formatFileSize(resultDownload.originalBytes)} → `
                     : ''}
                   Output: <strong className="text-[#18181B] dark:text-[#FAFAFA]">{formatFileSize(resultDownload.outputBytes)}</strong>{' '}
-                  · Engine: {resultDownload.engineUsed}
+                  · Mode: {resultDownload.engineUsed}
                 </div>
               </div>
               <a

@@ -143,22 +143,15 @@ export function HomeHeroUpload() {
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+            <div className="flex items-center justify-center pt-2">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="px-6 py-3 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] active:bg-[#7F1D1D] text-white font-semibold text-sm transition-colors shadow-sm flex items-center gap-2 cursor-pointer"
+                className="px-7 py-3.5 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] active:bg-[#7F1D1D] text-white font-semibold text-sm transition-colors shadow-sm flex items-center gap-2.5 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#B91C1C]"
               >
                 <FileText className="w-4 h-4" />
                 Choose PDF File
               </button>
-              <Link
-                href="/edit-pdf"
-                className="px-5 py-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] hover:bg-zinc-50 dark:hover:bg-[#27272A] text-[#18181B] dark:text-[#FAFAFA] font-medium text-sm transition-colors flex items-center gap-2"
-              >
-                <Edit3 className="w-4 h-4 text-[#B91C1C] dark:text-[#EF4444]" />
-                Open PDF Editor
-              </Link>
             </div>
 
             <div className="flex items-center gap-4 text-xs text-[#71717A] dark:text-[#A1A1AA] pt-2">

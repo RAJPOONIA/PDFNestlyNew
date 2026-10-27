@@ -44,7 +44,7 @@ export default function TermsPage() {
           <p>
             Most PDFNestly operations run locally inside your browser’s memory
             space without uploading files. For tools that require server
-            execution (such as Ghostscript stream compression and repair), files
+            execution (such as high-ratio stream compression and document repair), files
             are processed in isolated temporary directories and deleted
             immediately upon completion. PDFNestly never sells or accesses your
             document data.

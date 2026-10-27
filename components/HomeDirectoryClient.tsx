@@ -153,32 +153,7 @@ export function HomeDirectoryClient() {
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px] text-[#71717A] dark:text-[#A1A1AA]">
-              <Link
-                href="/edit-pdf"
-                onClick={() => recordToolVisit('edit-pdf')}
-                className="text-[#B91C1C] dark:text-[#EF4444] hover:underline font-medium inline-flex items-center gap-1"
-              >
-                <Sparkles className="w-3 h-3" />
-                Open Interactive PDF Editor
-              </Link>
-              <span className="hidden sm:inline">·</span>
-              <Link
-                href="/merge-pdf"
-                onClick={() => recordToolVisit('merge-pdf')}
-                className="hover:text-[#18181B] dark:hover:text-[#FAFAFA] underline"
-              >
-                Merge PDFs
-              </Link>
-              <span className="hidden sm:inline">·</span>
-              <Link
-                href="/compress-pdf"
-                onClick={() => recordToolVisit('compress-pdf')}
-                className="hover:text-[#18181B] dark:hover:text-[#FAFAFA] underline"
-              >
-                Compress PDF
-              </Link>
-            </div>
+
           </div>
         </div>
       </div>
@@ -320,7 +295,7 @@ export function HomeDirectoryClient() {
                     <span className="font-medium text-[#71717A] dark:text-[#A1A1AA]">
                       {tool.processingLocation === 'local-browser'
                         ? 'Local Browser'
-                        : 'Server Ghostscript'}
+                        : 'Cloud Processing'}
                     </span>
                   </div>
 

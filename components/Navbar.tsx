@@ -14,7 +14,6 @@ export function Navbar() {
 
   const navLinks = [
     { href: '/tools', label: 'All Tools', match: '/tools' },
-    { href: '/edit-pdf', label: 'PDF Editor', match: '/edit-pdf' },
     { href: '/merge-pdf', label: 'Merge & Split', match: '/merge-pdf' },
     { href: '/compress-pdf', label: 'Compress', match: '/compress-pdf' },
     { href: '/privacy', label: 'Privacy & Security', match: '/privacy' },

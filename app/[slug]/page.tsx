@@ -150,12 +150,12 @@ export default async function ToolLandingPage({ params }: ToolPageProps) {
 
           <div className="lg:col-span-5 space-y-4">
             <h2 className="text-lg font-bold text-[#18181B] dark:text-[#FAFAFA]">
-              Technical Engine & Scope Notes
+              Document Processing & Privacy Notes
             </h2>
             <div className="p-5 bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-xl space-y-3 text-xs text-[#52525B] dark:text-[#D4D4D8] leading-relaxed shadow-2xs">
               <div>
                 <strong className="text-[#18181B] dark:text-[#FAFAFA] block mb-0.5">
-                  Processing Engine:
+                  Processing Mode:
                 </strong>
                 <span className="font-mono text-[#B91C1C] dark:text-[#EF4444]">
                   {tool.engineLabel}
@@ -163,13 +163,13 @@ export default async function ToolLandingPage({ params }: ToolPageProps) {
               </div>
               <div>
                 <strong className="text-[#18181B] dark:text-[#FAFAFA] block mb-0.5">
-                  Implementation Details:
+                  Specifications & Quality:
                 </strong>
                 <p>{tool.technicalNotice}</p>
               </div>
               <div>
                 <strong className="text-[#18181B] dark:text-[#FAFAFA] block mb-0.5">
-                  Privacy & Retention:
+                  Document Privacy:
                 </strong>
                 <p>{tool.privacyDisclosure}</p>
               </div>
