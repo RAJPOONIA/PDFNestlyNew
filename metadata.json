@@ -1,0 +1,6 @@
+{
+  "name": "PDFNestly — Professional Online PDF Editor & Document Productivity Platform",
+  "description": "Edit, merge, split, compress, sign, OCR, redact, convert, and organize PDF documents directly in your browser and via secure server APIs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
