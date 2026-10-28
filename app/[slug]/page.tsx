@@ -74,6 +74,8 @@ export default async function ToolLandingPage({ params }: ToolPageProps) {
     })),
   };
 
+  const isEditorRoute = tool.slug === 'edit-pdf' || tool.slug === 'sign-pdf';
+
   return (
     <div className="bg-[#FAFAFA] dark:bg-[#09090B] transition-colors">
       <script
@@ -81,52 +83,66 @@ export default async function ToolLandingPage({ params }: ToolPageProps) {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(faqSchema) }}
       />
 
-      {/* Breadcrumb & Tool Header */}
-      <section className="bg-white dark:bg-[#18181B] border-b border-[#E4E4E7] dark:border-[#3F3F46]">
-        <div className="max-w-7xl mx-auto px-6 py-8 space-y-3">
-          <nav
-            aria-label="Breadcrumb"
-            className="flex items-center gap-2 text-xs text-[#71717A] dark:text-[#A1A1AA]"
-          >
-            <Link
-              href="/"
-              className="hover:text-[#18181B] dark:hover:text-[#FAFAFA] underline"
-            >
-              Home
-            </Link>
-            <span aria-hidden="true">/</span>
-            <Link
-              href="/tools"
-              className="hover:text-[#18181B] dark:hover:text-[#FAFAFA] underline"
-            >
-              {tool.category}
-            </Link>
-            <span aria-hidden="true">/</span>
-            <span className="text-[#18181B] dark:text-[#FAFAFA] font-medium">
-              {tool.shortTitle}
-            </span>
-          </nav>
-
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
-            <div className="space-y-2 max-w-3xl">
-              <h1 className="text-2xl sm:text-3xl font-bold text-[#18181B] dark:text-[#FAFAFA] tracking-tight">
-                {tool.title}
-              </h1>
-              <p className="text-sm text-[#52525B] dark:text-[#D4D4D8] leading-relaxed">
-                {tool.summary}
-              </p>
-            </div>
-            <div className="text-xs text-[#71717A] dark:text-[#A1A1AA] font-mono shrink-0">
-              Tool #{String(tool.id).padStart(2, '0')} · /{tool.slug}
-            </div>
+      {isEditorRoute ? (
+        <>
+          <h1 className="sr-only">{tool.title}</h1>
+          <div className="w-full">
+            <PdfToolRunner tool={tool} />
           </div>
-        </div>
-      </section>
+        </>
+      ) : (
+        <>
+          {/* Breadcrumb & Tool Header */}
+          <section className="bg-white dark:bg-[#18181B] border-b border-[#E4E4E7] dark:border-[#3F3F46]">
+            <div className="max-w-7xl mx-auto px-6 py-8 space-y-3">
+              <nav
+                aria-label="Breadcrumb"
+                className="flex items-center gap-2 text-xs text-[#71717A] dark:text-[#A1A1AA]"
+              >
+                <Link
+                  href="/"
+                  className="hover:text-[#18181B] dark:hover:text-[#FAFAFA] underline"
+                >
+                  Home
+                </Link>
+                <span aria-hidden="true">/</span>
+                <Link
+                  href="/tools"
+                  className="hover:text-[#18181B] dark:hover:text-[#FAFAFA] underline"
+                >
+                  {tool.category}
+                </Link>
+                <span aria-hidden="true">/</span>
+                <span className="text-[#18181B] dark:text-[#FAFAFA] font-medium">
+                  {tool.shortTitle}
+                </span>
+              </nav>
 
-      {/* Main Tool Execution Workspace */}
+              <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+                <div className="space-y-2 max-w-3xl">
+                  <h1 className="text-2xl sm:text-3xl font-bold text-[#18181B] dark:text-[#FAFAFA] tracking-tight">
+                    {tool.title}
+                  </h1>
+                  <p className="text-sm text-[#52525B] dark:text-[#D4D4D8] leading-relaxed">
+                    {tool.summary}
+                  </p>
+                </div>
+                <div className="text-xs text-[#71717A] dark:text-[#A1A1AA] font-mono shrink-0">
+                  Tool #{String(tool.id).padStart(2, '0')} · /{tool.slug}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Main Tool Execution Workspace */}
+          <div className="max-w-7xl mx-auto px-6 pt-10">
+            <PdfToolRunner tool={tool} />
+          </div>
+        </>
+      )}
+
+      {/* Technical Documentation, Transparency Grid, FAQs, and Related Tools */}
       <div className="max-w-7xl mx-auto px-6 py-10 space-y-14">
-        <PdfToolRunner tool={tool} />
-
         {/* How It Works + Technical Transparency Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 pt-6 border-t border-[#E4E4E7] dark:border-[#3F3F46]">
           <div className="lg:col-span-7 space-y-4">

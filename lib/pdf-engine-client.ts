@@ -110,6 +110,10 @@ export interface EditorAnnotationItem {
     | 'text'
     | 'highlight'
     | 'rectangle'
+    | 'shape'
+    | 'circle'
+    | 'line'
+    | 'arrow'
     | 'redact'
     | 'stamp'
     | 'watermark'
@@ -125,6 +129,15 @@ export interface EditorAnnotationItem {
   fontSize?: number;
   opacity?: number;
   imageDataUrl?: string;
+  shapeType?: 'rectangle' | 'rounded-rect' | 'ellipse' | 'line' | 'arrow' | 'freehand';
+  fillColorHex?: string;
+  strokeColorHex?: string;
+  strokeWidth?: number;
+  isExistingTextEdit?: boolean;
+  originalText?: string;
+  backgroundColorHex?: string;
+  aspectRatioLocked?: boolean;
+  fontFamily?: string;
 }
 
 /**
@@ -241,22 +254,68 @@ export async function renderPdfThumbnails(
   return results;
 }
 
+export interface RenderSinglePageResult {
+  dataUrl: string;
+  widthPx: number;
+  heightPx: number;
+  unscaledWidthPt: number;
+  unscaledHeightPt: number;
+  rotation: number;
+}
+
 /**
  * Renders a single PDF page at high resolution to a data URL.
  */
 export async function renderSinglePageDataUrl(
   bytes: Uint8Array,
   pageNumber: number,
+  scale?: number,
+  mimeType?: 'image/jpeg' | 'image/png' | 'image/webp',
+  quality?: number
+): Promise<RenderSinglePageResult>;
+export async function renderSinglePageDataUrl(
+  bytes: Uint8Array,
+  pageNumber: number,
+  scale?: number,
+  rotation?: number,
+  mimeType?: 'image/jpeg' | 'image/png' | 'image/webp',
+  quality?: number
+): Promise<RenderSinglePageResult>;
+export async function renderSinglePageDataUrl(
+  bytes: Uint8Array,
+  pageNumber: number,
   scale = 1.5,
-  mimeType: 'image/jpeg' | 'image/png' | 'image/webp' = 'image/png',
-  quality = 0.92
-): Promise<{ dataUrl: string; widthPx: number; heightPx: number }> {
+  arg4: number | 'image/jpeg' | 'image/png' | 'image/webp' = 0,
+  arg5?: number | 'image/jpeg' | 'image/png' | 'image/webp',
+  arg6 = 0.92
+): Promise<RenderSinglePageResult> {
+  let rotation = 0;
+  let effectiveMime: 'image/jpeg' | 'image/png' | 'image/webp' = 'image/png';
+  let effectiveQuality = 0.92;
+
+  if (typeof arg4 === 'number') {
+    rotation = arg4;
+    if (typeof arg5 === 'string') {
+      effectiveMime = arg5;
+    }
+    if (typeof arg6 === 'number') {
+      effectiveQuality = arg6;
+    }
+  } else if (typeof arg4 === 'string') {
+    effectiveMime = arg4;
+    if (typeof arg5 === 'number') {
+      effectiveQuality = arg5;
+    }
+  }
+
   const pdfjs = await getPdfJs();
   const loadingTask = pdfjs.getDocument({ data: bytes.slice(0) });
   const pdf = await loadingTask.promise;
   const clampedPage = Math.max(1, Math.min(pdf.numPages, pageNumber));
   const page = await pdf.getPage(clampedPage);
-  const viewport = page.getViewport({ scale });
+  const totalRotation = ((page.rotate || 0) + (rotation || 0)) % 360;
+  const viewport = page.getViewport({ scale, rotation: totalRotation });
+  const unscaled = page.getViewport({ scale: 1.0, rotation: totalRotation });
 
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.floor(viewport.width));
@@ -269,9 +328,12 @@ export async function renderSinglePageDataUrl(
   }
 
   return {
-    dataUrl: canvas.toDataURL(mimeType, quality),
+    dataUrl: canvas.toDataURL(effectiveMime, effectiveQuality),
     widthPx: canvas.width,
     heightPx: canvas.height,
+    unscaledWidthPt: Math.round(unscaled.width),
+    unscaledHeightPt: Math.round(unscaled.height),
+    rotation: totalRotation,
   };
 }
 
@@ -973,16 +1035,111 @@ export async function applyEditorAnnotationsToPdf(
         color: rgb(r, g, b),
         opacity: 0.35,
       });
-    } else if (item.type === 'rectangle') {
+    } else if (item.isExistingTextEdit) {
+      const bgCol = item.backgroundColorHex ? hexToRgbTuple(item.backgroundColorHex) : [1, 1, 1];
       page.drawRectangle({
-        x: pdfX,
-        y: pdfY,
-        width: boxW,
-        height: boxH,
-        borderColor: rgb(r, g, b),
-        borderWidth: 2,
-        opacity,
+        x: pdfX - 1,
+        y: pdfY - 2,
+        width: boxW + 2,
+        height: boxH + 4,
+        color: rgb(bgCol[0], bgCol[1], bgCol[2]),
+        opacity: 1,
       });
+      const safeText = (item.text || '').replace(/[^ -~ -ÿ]/g, ' ');
+      if (safeText.trim()) {
+        page.drawText(safeText, {
+          x: pdfX,
+          y: pdfY + 1,
+          size: item.fontSize || 12,
+          font: fontRegular,
+          color: rgb(r, g, b),
+          opacity: 1,
+        });
+      }
+    } else if (
+      item.type === 'rectangle' ||
+      item.type === 'shape' ||
+      item.type === 'circle' ||
+      item.type === 'line' ||
+      item.type === 'arrow'
+    ) {
+      const sType =
+        item.shapeType ||
+        (item.type === 'circle' ? 'ellipse' : item.type === 'line' ? 'line' : item.type === 'arrow' ? 'arrow' : 'rectangle');
+      const strokeW = item.strokeWidth ?? 2;
+      const strokeCol = item.strokeColorHex ? hexToRgbTuple(item.strokeColorHex) : [r, g, b];
+      const strokeRgb = rgb(strokeCol[0], strokeCol[1], strokeCol[2]);
+      const hasFill = Boolean(item.fillColorHex && item.fillColorHex !== 'transparent' && item.fillColorHex !== 'none');
+      const fillCol = hasFill ? hexToRgbTuple(item.fillColorHex!) : null;
+      const fillRgb = fillCol ? rgb(fillCol[0], fillCol[1], fillCol[2]) : undefined;
+
+      if (sType === 'ellipse') {
+        const radiusX = Math.max(1, boxW / 2);
+        const radiusY = Math.max(1, boxH / 2);
+        page.drawEllipse({
+          x: pdfX + radiusX,
+          y: pdfY + radiusY,
+          xScale: radiusX,
+          yScale: radiusY,
+          color: fillRgb,
+          borderColor: strokeRgb,
+          borderWidth: strokeW,
+          opacity,
+        });
+      } else if (sType === 'line') {
+        page.drawLine({
+          start: { x: pdfX, y: pdfY + boxH },
+          end: { x: pdfX + boxW, y: pdfY },
+          thickness: strokeW,
+          color: strokeRgb,
+          opacity,
+        });
+      } else if (sType === 'arrow') {
+        const startX = pdfX;
+        const startY = pdfY + boxH;
+        const endX = pdfX + boxW;
+        const endY = pdfY;
+        page.drawLine({
+          start: { x: startX, y: startY },
+          end: { x: endX, y: endY },
+          thickness: strokeW,
+          color: strokeRgb,
+          opacity,
+        });
+        const angle = Math.atan2(endY - startY, endX - startX);
+        const headLen = Math.min(14, Math.max(6, strokeW * 3));
+        page.drawLine({
+          start: { x: endX, y: endY },
+          end: {
+            x: endX - headLen * Math.cos(angle - Math.PI / 6),
+            y: endY - headLen * Math.sin(angle - Math.PI / 6),
+          },
+          thickness: strokeW,
+          color: strokeRgb,
+          opacity,
+        });
+        page.drawLine({
+          start: { x: endX, y: endY },
+          end: {
+            x: endX - headLen * Math.cos(angle + Math.PI / 6),
+            y: endY - headLen * Math.sin(angle + Math.PI / 6),
+          },
+          thickness: strokeW,
+          color: strokeRgb,
+          opacity,
+        });
+      } else {
+        page.drawRectangle({
+          x: pdfX,
+          y: pdfY,
+          width: boxW,
+          height: boxH,
+          color: fillRgb,
+          borderColor: strokeRgb,
+          borderWidth: strokeW,
+          opacity,
+        });
+      }
     } else if (item.type === 'stamp') {
       const stampText = (item.text || 'APPROVED')
         .toUpperCase()

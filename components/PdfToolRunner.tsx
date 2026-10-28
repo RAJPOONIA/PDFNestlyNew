@@ -56,6 +56,10 @@ import {
   sanitizeOrFlattenPdf,
 } from '@/lib/pdf-engine-client';
 import { PdfEditorWorkspace } from './PdfEditorWorkspace';
+import {
+  loadCurrentDocument,
+  storeCurrentDocument,
+} from '@/lib/document-store';
 
 interface PdfToolRunnerProps {
   tool: PdfToolDefinition;
@@ -87,6 +91,45 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
   const [fileName, setFileName] = useState<string>('');
   const [inspection, setInspection] = useState<PdfInspectionReport | null>(null);
   const [thumbnails, setThumbnails] = useState<PageThumbnailInfo[]>([]);
+
+  // Auto-load active document from shared document store if present and no file loaded yet
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const stored = await loadCurrentDocument();
+        if (stored && stored.bytes && stored.bytes.length > 0 && active) {
+          if (tool.acceptedInputs === 'multi-pdf') {
+            setMultiPdfs((prev) => {
+              if (prev.length === 0) {
+                return [
+                  {
+                    id: stored.id,
+                    name: stored.name,
+                    bytes: stored.bytes,
+                    pageCount: 1,
+                  },
+                ];
+              }
+              return prev;
+            });
+          } else if (
+            tool.acceptedInputs !== 'images' &&
+            tool.acceptedInputs !== 'office-or-text'
+          ) {
+            setPdfBytes((prev) => prev ?? stored.bytes);
+            setFileName((prev) => prev || stored.name);
+          }
+        }
+      } catch (err) {
+        console.warn('Could not load active document into tool runner:', err);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [tool.acceptedInputs]);
 
   // Multi-PDF state (for Merge & Compare)
   const [multiPdfs, setMultiPdfs] = useState<UploadedPdfItem[]>([]);
@@ -470,6 +513,7 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
         }
         setPdfBytes(bytes);
         setFileName(f.name);
+        storeCurrentDocument({ name: f.name, bytes }, `tool:${tool.slug}`).catch(() => {});
       }
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'File validation failed.');

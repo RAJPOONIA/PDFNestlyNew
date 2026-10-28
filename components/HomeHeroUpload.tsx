@@ -1,21 +1,22 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
-import Link from 'next/link';
+import React, { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   UploadCloud,
   FileText,
-  CheckCircle2,
   AlertCircle,
-  ArrowRight,
-  Edit3,
-  Layers,
-  Minimize2,
+  CheckCircle2,
   Lock,
   RefreshCw,
   X,
+  Minimize2,
+  Layers,
+  ArrowRight,
+  Sparkles,
 } from 'lucide-react';
+import { storeCurrentDocument, clearCurrentDocument } from '@/lib/document-store';
 
 function isValidPdfBytes(bytes: Uint8Array): boolean {
   if (bytes.length < 5) return false;
@@ -31,15 +32,22 @@ export function HomeHeroUpload() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = useCallback(async (file: File) => {
+  const handleFile = async (file: File) => {
     setError(null);
-    if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
-      setError('Please select a valid PDF file (.pdf extension).');
+
+    // Validate size (100 MB max)
+    if (file.size > 100 * 1024 * 1024) {
+      setError('File size exceeds the 100 MB limit. Please select a smaller PDF.');
+      setSelectedFile(null);
       return;
     }
 
-    if (file.size > 100 * 1024 * 1024) {
-      setError('File size exceeds the 100MB limit for browser processing.');
+    // Validate type or extension
+    const isPdfExt = file.name.toLowerCase().endsWith('.pdf');
+    const isPdfMime = file.type === 'application/pdf' || file.type === '';
+    if (!isPdfExt && !isPdfMime) {
+      setError('Please upload a valid PDF document (.pdf).');
+      setSelectedFile(null);
       return;
     }
 
@@ -50,17 +58,19 @@ export function HomeHeroUpload() {
       if (!isValid) {
         setError('The selected file does not appear to be a valid or uncorrupted PDF (missing %PDF- header).');
         setSelectedFile(null);
-        setIsValidating(false);
         return;
       }
+
+      // Store in shared IndexedDB store so all tools and PDFNestly Studio can immediately access it
+      await storeCurrentDocument(file, 'homepage-upload');
       setSelectedFile(file);
     } catch {
-      setError('Could not read file. Please ensure it is accessible.');
+      setError('Failed to read and validate the PDF. The file may be locked or corrupted.');
       setSelectedFile(null);
     } finally {
       setIsValidating(false);
     }
-  }, []);
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -90,22 +100,16 @@ export function HomeHeroUpload() {
   };
 
   const openInEditor = () => {
-    if (!selectedFile) {
-      router.push('/edit-pdf');
-      return;
+    router.push('/edit-pdf');
+  };
+
+  const handleReplacePdf = async () => {
+    setSelectedFile(null);
+    setError(null);
+    await clearCurrentDocument();
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
     }
-    // Store in sessionStorage for immediate pick-up by workspace
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        sessionStorage.setItem('pdfnestly_editor_preload', reader.result as string);
-        sessionStorage.setItem('pdfnestly_editor_preload_name', selectedFile.name);
-      } catch {
-        // Fallback if quota exceeded
-      }
-      router.push('/edit-pdf');
-    };
-    reader.readAsDataURL(selectedFile);
   };
 
   return (
@@ -169,7 +173,7 @@ export function HomeHeroUpload() {
             </div>
           </div>
         ) : (
-          <div className="space-y-4 text-left">
+          <div className="space-y-5 text-left">
             <div className="flex items-center justify-between p-4 rounded-xl bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46]">
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-10 h-10 rounded-lg bg-[#FEF2F2] dark:bg-[#B91C1C]/20 flex items-center justify-center text-[#B91C1C] dark:text-[#EF4444] shrink-0">
@@ -180,57 +184,61 @@ export function HomeHeroUpload() {
                     {selectedFile.name}
                   </p>
                   <p className="text-xs text-[#71717A] dark:text-[#A1A1AA]">
-                    {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • PDF Document Verified
+                    {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready in Document Store
                   </p>
                 </div>
               </div>
+
               <button
                 type="button"
-                onClick={() => setSelectedFile(null)}
-                className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
-                title="Remove file"
+                onClick={handleReplacePdf}
+                className="px-3 py-1.5 rounded-lg border border-[#E4E4E7] dark:border-[#3F3F46] hover:bg-zinc-100 dark:hover:bg-zinc-700 text-xs font-medium text-[#52525B] dark:text-[#D4D4D8] transition-colors flex items-center gap-1.5"
+                title="Replace with another PDF"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
+                <span>Replace PDF</span>
               </button>
             </div>
 
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-[#71717A] dark:text-[#A1A1AA] mb-2">
-                Choose what to do with this file:
-              </p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                 <button
                   type="button"
                   onClick={openInEditor}
-                  className="p-3 rounded-xl border border-[#B91C1C] dark:border-[#EF4444] bg-[#FEF2F2] dark:bg-[#B91C1C]/15 hover:bg-[#B91C1C] hover:text-white text-[#B91C1C] dark:text-[#EF4444] dark:hover:text-white transition-colors text-left flex flex-col justify-between group cursor-pointer"
+                  className="flex-1 py-3 px-5 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] active:bg-[#7F1D1D] text-white font-bold text-sm transition-colors shadow-sm flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  <Edit3 className="w-4 h-4 mb-2 group-hover:scale-110 transition-transform" />
-                  <span className="text-xs font-bold leading-tight">Edit in Workspace</span>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Open in PDFNestly Studio</span>
                 </button>
+              </div>
 
-                <Link
-                  href="/compress-pdf"
-                  className="p-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-white dark:bg-[#27272A] hover:border-[#B91C1C] dark:hover:border-[#EF4444] text-[#18181B] dark:text-[#FAFAFA] transition-colors text-left flex flex-col justify-between group"
-                >
-                  <Minimize2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mb-2 group-hover:scale-110 transition-transform" />
-                  <span className="text-xs font-semibold leading-tight">Compress PDF</span>
-                </Link>
-
-                <Link
-                  href="/split-pdf"
-                  className="p-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-white dark:bg-[#27272A] hover:border-[#B91C1C] dark:hover:border-[#EF4444] text-[#18181B] dark:text-[#FAFAFA] transition-colors text-left flex flex-col justify-between group"
-                >
-                  <Layers className="w-4 h-4 text-amber-600 dark:text-amber-400 mb-2 group-hover:scale-110 transition-transform" />
-                  <span className="text-xs font-semibold leading-tight">Split Pages</span>
-                </Link>
-
-                <Link
-                  href="/tools"
-                  className="p-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-white dark:bg-[#27272A] hover:border-[#B91C1C] dark:hover:border-[#EF4444] text-[#18181B] dark:text-[#FAFAFA] transition-colors text-left flex flex-col justify-between group"
-                >
-                  <ArrowRight className="w-4 h-4 text-[#B91C1C] dark:text-[#EF4444] mb-2 group-hover:translate-x-1 transition-transform" />
-                  <span className="text-xs font-semibold leading-tight">All 30 Tools</span>
-                </Link>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wider text-[#71717A] dark:text-[#A1A1AA] mb-2">
+                  Or apply a direct operation:
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  <Link
+                    href="/compress-pdf"
+                    className="p-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-white dark:bg-[#27272A] hover:border-[#B91C1C] dark:hover:border-[#EF4444] text-[#18181B] dark:text-[#FAFAFA] transition-colors text-left flex flex-col justify-between group"
+                  >
+                    <Minimize2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 mb-2 group-hover:scale-110 transition-transform" />
+                    <span className="text-xs font-semibold leading-tight">Compress PDF</span>
+                  </Link>
+                  <Link
+                    href="/split-pdf"
+                    className="p-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-white dark:bg-[#27272A] hover:border-[#B91C1C] dark:hover:border-[#EF4444] text-[#18181B] dark:text-[#FAFAFA] transition-colors text-left flex flex-col justify-between group"
+                  >
+                    <Layers className="w-4 h-4 text-amber-600 dark:text-amber-400 mb-2 group-hover:scale-110 transition-transform" />
+                    <span className="text-xs font-semibold leading-tight">Split Pages</span>
+                  </Link>
+                  <Link
+                    href="/tools"
+                    className="p-3 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-white dark:bg-[#27272A] hover:border-[#B91C1C] dark:hover:border-[#EF4444] text-[#18181B] dark:text-[#FAFAFA] transition-colors text-left flex flex-col justify-between group"
+                  >
+                    <ArrowRight className="w-4 h-4 text-[#B91C1C] dark:text-[#EF4444] mb-2 group-hover:translate-x-1 transition-transform" />
+                    <span className="text-xs font-semibold leading-tight">More Tools (All 30)</span>
+                  </Link>
+                </div>
               </div>
             </div>
           </div>
