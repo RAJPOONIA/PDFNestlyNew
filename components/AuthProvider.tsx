@@ -59,7 +59,8 @@ interface AuthContextValue {
     displayName: string;
   }) => Promise<{
     user: ClientUserProfile;
-    verificationUrl?: string;
+    emailSent?: boolean;
+    emailDeliveryConfigured?: boolean;
     message?: string;
   }>;
   logout: () => Promise<void>;
@@ -246,7 +247,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(data.user);
       return {
         user: data.user as ClientUserProfile,
-        verificationUrl: data.verificationUrl as string | undefined,
+        emailSent: Boolean(data.emailSent),
+        emailDeliveryConfigured: Boolean(data.emailDeliveryConfigured),
         message: data.message as string | undefined,
       };
     },

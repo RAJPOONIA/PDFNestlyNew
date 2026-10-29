@@ -21,6 +21,9 @@ import {
   createPasswordResetRequest,
   resetPasswordWithToken,
   hashResetToken,
+  hashVerificationToken,
+  updateUserProfile,
+  getSessionCookieName,
   recordActivityAndJobEvent,
   getUserDashboardData,
   getAdminOverviewMetrics,
@@ -32,9 +35,20 @@ import {
 } from './platform-store';
 import {
   setPasswordResetTestTransport,
+  setEmailVerificationTestTransport,
+  setMockSmtpTransport,
+  classifySmtpError,
   type PasswordResetEmailPayload,
+  type EmailVerificationPayload,
+  type MockSmtpSendMailOptions,
 } from './password-reset-mailer';
 import { POST as forgotPasswordPost } from '../app/api/auth/forgot-password/route';
+import { POST as registerPost } from '../app/api/auth/register/route';
+import { POST as verifyEmailPost } from '../app/api/auth/verify-email/route';
+import {
+  GET as adminEmailDiagGet,
+  POST as adminEmailDiagPost,
+} from '../app/api/admin/email-diagnostics/route';
 import { NextRequest } from 'next/server';
 
 test('User registration, email verification, login, and brute-force protection', () => {
@@ -516,9 +530,279 @@ test('Bootstrap admin role assignment, PDF job tracking, deduplication, and Admi
   assert.ok(auditLogs.some((l) => l.action === 'user.suspended'));
   assert.ok(auditLogs.some((l) => l.action === 'settings.updated'));
   assert.ok(auditLogs.some((l) => l.action === 'user.deleted'));
+});
+
+test('Email verification security, domain separation from password-reset tokens, and Private Email SMTP diagnostics', async () => {
+  resetDatabaseForTesting();
+  setPasswordResetTestTransport(null);
+  setEmailVerificationTestTransport(null);
+  setMockSmtpTransport(null);
+
+  // 1. Register via POST /api/auth/register with mocked verification mailer:
+  //    - Sends verification email via transport
+  //    - Never returns verificationToken or verificationUrl in HTTP JSON response
+  const verificationEmails: EmailVerificationPayload[] = [];
+  setEmailVerificationTestTransport((payload) => {
+    verificationEmails.push(payload);
+  });
+
+  const regReq = new NextRequest('https://pdfnestly.com/api/auth/register', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-forwarded-for': '198.51.100.21',
+    },
+    body: JSON.stringify({
+      email: 'claire.verify@example.com',
+      password: 'ClairePassword123',
+      displayName: 'Claire Verifier',
+    }),
+  });
+  const regRes = await registerPost(regReq);
+  assert.equal(regRes.status, 201);
+  const regBody = await regRes.json();
+
+  assert.equal(regBody.user.email, 'claire.verify@example.com');
+  assert.equal(regBody.user.emailVerified, false);
+  assert.equal(regBody.emailSent, true);
+  assert.equal('verificationToken' in regBody, false);
+  assert.equal('verificationUrl' in regBody, false);
+  assert.equal(verificationEmails.length, 1);
+  assert.equal(verificationEmails[0].to, 'claire.verify@example.com');
+
+  const emailedVerifyUrl = new URL(verificationEmails[0].verificationUrl);
+  const firstVerifyToken = emailedVerifyUrl.searchParams.get('token') || '';
+  const claireUid = emailedVerifyUrl.searchParams.get('uid') || '';
+  assert.match(firstVerifyToken, /^[a-f0-9]{64}$/);
+  assert.equal(claireUid, regBody.user.uid);
+  assert.equal(
+    JSON.stringify(regBody).includes(firstVerifyToken),
+    false,
+    'Registration API response must never contain the raw verification token'
+  );
+
+  // 2. Verify token is hashed at rest in the database (never plaintext)
+  const rawDb = fs.readFileSync(testDbFile, 'utf8');
+  assert.equal(rawDb.includes(firstVerifyToken), false);
+  assert.equal(
+    rawDb.includes(hashVerificationToken(firstVerifyToken)),
+    true,
+    'SHA-256 domain-separated digest of verification token must be stored at rest'
+  );
+
+  // 3. Unverified email user is blocked from modifying profile/password settings
+  assert.throws(() => {
+    updateUserProfile(claireUid, { displayName: 'Unauthorized Name Change' });
+  }, /verify your email address/);
+
+  // 4. Requesting a password reset does NOT mark email as verified, and password-reset token
+  //    CANNOT be used as an email-verification token (nor vice versa)
+  const resetReq = createPasswordResetRequest('claire.verify@example.com');
+  assert.ok(resetReq.resetToken);
+
+  assert.throws(() => {
+    verifyEmailWithToken(claireUid, resetReq.resetToken!);
+  }, /Invalid or expired email verification token/);
+
+  assert.throws(() => {
+    resetPasswordWithToken({
+      email: 'claire.verify@example.com',
+      token: firstVerifyToken,
+      newPassword: 'CrossTokenHackPassword123',
+    });
+  }, /Invalid or expired password reset token/);
+
+  // 5. Resending verification email via POST /api/auth/verify-email (action: 'resend'):
+  //    - Never returns verificationToken or verificationUrl in response
+  //    - Supersedes and invalidates the previous verification token
+  const sessionCookieName = getSessionCookieName();
+  const resendReq = new NextRequest(
+    'https://pdfnestly.com/api/auth/verify-email',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-forwarded-for': '198.51.100.22',
+        cookie: `${sessionCookieName}=${regBody.sessionToken}`,
+      },
+      body: JSON.stringify({ action: 'resend' }),
+    }
+  );
+  const resendRes = await verifyEmailPost(resendReq);
+  assert.equal(resendRes.status, 200);
+  const resendBody = await resendRes.json();
+  assert.equal(resendBody.success, true);
+  assert.equal(resendBody.emailSent, true);
+  assert.equal('verificationToken' in resendBody, false);
+  assert.equal('verificationUrl' in resendBody, false);
+  assert.equal(verificationEmails.length, 2);
+
+  const secondVerifyToken =
+    new URL(verificationEmails[1].verificationUrl).searchParams.get('token') ||
+    '';
+  assert.match(secondVerifyToken, /^[a-f0-9]{64}$/);
+  assert.notEqual(firstVerifyToken, secondVerifyToken);
+
+  // First token is now superseded and rejected
+  assert.throws(() => {
+    verifyEmailWithToken(claireUid, firstVerifyToken);
+  }, /Invalid or expired email verification token/);
+
+  // 6. Expired verification token is rejected
+  const dbSnapshot = JSON.parse(fs.readFileSync(testDbFile, 'utf8'));
+  const claireRecord = dbSnapshot.users.find(
+    (u: { uid: string }) => u.uid === claireUid
+  );
+  claireRecord.verificationTokenExpiresAt = new Date(
+    Date.now() - 60_000
+  ).toISOString();
+  fs.writeFileSync(testDbFile, JSON.stringify(dbSnapshot, null, 2), 'utf8');
+
+  assert.throws(() => {
+    verifyEmailWithToken(claireUid, secondVerifyToken);
+  }, /Invalid or expired email verification token/);
+
+  // 7. Issue fresh verification token via resend, confirm once via API, and verify reuse is rejected
+  const secondResendReq = new NextRequest(
+    'https://pdfnestly.com/api/auth/verify-email',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-forwarded-for': '198.51.100.23',
+        cookie: `${sessionCookieName}=${regBody.sessionToken}`,
+      },
+      body: JSON.stringify({ action: 'resend' }),
+    }
+  );
+  await verifyEmailPost(secondResendReq);
+  const thirdVerifyToken =
+    new URL(verificationEmails[2].verificationUrl).searchParams.get('token') ||
+    '';
+
+  const confirmVerifyReq = new NextRequest(
+    'https://pdfnestly.com/api/auth/verify-email',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-forwarded-for': '198.51.100.24',
+      },
+      body: JSON.stringify({
+        action: 'verify',
+        uid: claireUid,
+        token: thirdVerifyToken,
+      }),
+    }
+  );
+  const confirmVerifyRes = await verifyEmailPost(confirmVerifyReq);
+  assert.equal(confirmVerifyRes.status, 200);
+  const confirmVerifyBody = await confirmVerifyRes.json();
+  assert.equal(confirmVerifyBody.success, true);
+  assert.equal(confirmVerifyBody.user.emailVerified, true);
+
+  // Reusing the same verification token a second time MUST fail
+  assert.throws(() => {
+    verifyEmailWithToken(claireUid, thirdVerifyToken);
+  }, /Invalid or expired email verification token/);
+
+  // Now that Claire's email is verified, she can update her profile settings
+  const updatedClaire = updateUserProfile(claireUid, {
+    displayName: 'Claire Verified Pro',
+  });
+  assert.equal(updatedClaire.displayName, 'Claire Verified Pro');
+
+  // 8. Test Private Email SMTP mock transport, sender alias rejection classification, and Admin Diagnostics endpoint
+  setEmailVerificationTestTransport(null);
+
+  const aliasErr = Object.assign(
+    new Error('553 5.7.1 <support@pdfnestly.com>: Sender address rejected: not owned by user rajpoonia@pdfnestly.com'),
+    { responseCode: 553 }
+  );
+  const classifiedAlias = classifySmtpError(aliasErr);
+  assert.equal(classifiedAlias.category, 'sender_alias_rejected');
+
+  // Admin diagnostics endpoint rejects unauthenticated (401) and non-admin (403) callers
+  const unauthDiagReq = new NextRequest(
+    'https://pdfnestly.com/api/admin/email-diagnostics',
+    { method: 'GET' }
+  );
+  const unauthDiagRes = await adminEmailDiagGet(unauthDiagReq);
+  assert.equal(unauthDiagRes.status, 401);
+
+  const nonAdminDiagReq = new NextRequest(
+    'https://pdfnestly.com/api/admin/email-diagnostics',
+    {
+      method: 'GET',
+      headers: { cookie: `${sessionCookieName}=${regBody.sessionToken}` },
+    }
+  );
+  const nonAdminDiagRes = await adminEmailDiagGet(nonAdminDiagReq);
+  assert.equal(nonAdminDiagRes.status, 403);
+
+  // Register admin and test Admin Email Diagnostics GET & POST with mocked SMTP transport
+  const adminAccount = registerEmailUser({
+    email: 'rfjatt002@gmail.com',
+    password: 'AdminDiagPassword123',
+    displayName: 'Raj Admin',
+  });
+
+  const smtpSentMessages: MockSmtpSendMailOptions[] = [];
+  setMockSmtpTransport({
+    verify: async () => true,
+    sendMail: async (opts) => {
+      smtpSentMessages.push(opts);
+      return {
+        messageId: '<mock-msg-001@pdfnestly.com>',
+        accepted: [opts.to],
+        rejected: [],
+        response: '250 2.0.0 Ok: queued',
+      };
+    },
+  });
+
+  // Attempting to send diagnostic test email to an arbitrary non-admin recipient is rejected (400)
+  const badRecipientReq = new NextRequest(
+    'https://pdfnestly.com/api/admin/email-diagnostics',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie: `${sessionCookieName}=${adminAccount.sessionToken}`,
+      },
+      body: JSON.stringify({ recipient: 'external.target@example.com' }),
+    }
+  );
+  const badRecipientRes = await adminEmailDiagPost(badRecipientReq);
+  assert.equal(badRecipientRes.status, 400);
+
+  // Sending diagnostic test email to the authenticated admin's own email succeeds
+  const validDiagPostReq = new NextRequest(
+    'https://pdfnestly.com/api/admin/email-diagnostics',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie: `${sessionCookieName}=${adminAccount.sessionToken}`,
+      },
+      body: JSON.stringify({}),
+    }
+  );
+  const validDiagPostRes = await adminEmailDiagPost(validDiagPostReq);
+  assert.equal(validDiagPostRes.status, 200);
+  const validDiagPostBody = await validDiagPostRes.json();
+  assert.equal(validDiagPostBody.connectionVerified, true);
+  assert.equal(validDiagPostBody.messageSubmitted, true);
+  assert.equal(validDiagPostBody.recipient, 'rfjatt002@gmail.com');
+  assert.equal(validDiagPostBody.errorCategory, 'none');
+  assert.equal(smtpSentMessages.length, 1);
+  assert.equal(smtpSentMessages[0].to, 'rfjatt002@gmail.com');
+
+  setMockSmtpTransport(null);
 
   if (fs.existsSync(testDbFile)) {
     fs.unlinkSync(testDbFile);
   }
 });
+
 

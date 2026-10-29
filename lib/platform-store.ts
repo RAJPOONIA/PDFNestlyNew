@@ -30,6 +30,7 @@ export interface PlatformUser {
   emailVerified: boolean;
   passwordHash?: string;
   verificationToken?: string | null;
+  verificationTokenExpiresAt?: string | null;
   resetToken?: string | null;
   resetTokenExpiresAt?: string | null;
   pdfJobsCount: number;
@@ -41,7 +42,11 @@ export interface PlatformUser {
 
 export type SafeUserProfile = Omit<
   PlatformUser,
-  'passwordHash' | 'verificationToken' | 'resetToken' | 'resetTokenExpiresAt'
+  | 'passwordHash'
+  | 'verificationToken'
+  | 'verificationTokenExpiresAt'
+  | 'resetToken'
+  | 'resetTokenExpiresAt'
 >;
 
 export interface UserSessionRecord {
@@ -161,6 +166,7 @@ export function toSafeUser(user: PlatformUser): SafeUserProfile {
   const {
     passwordHash: _p,
     verificationToken: _v,
+    verificationTokenExpiresAt: _ve,
     resetToken: _r,
     resetTokenExpiresAt: _re,
     ...safe
@@ -576,8 +582,15 @@ export function registerEmailUser(params: {
   }
 
   const nowIso = new Date().toISOString();
-  const verificationToken = crypto.randomBytes(24).toString('hex');
-  const assignedRole: UserRole = isBootstrapAdminEmail(normalizedEmail)
+  const verificationToken = crypto.randomBytes(32).toString('hex');
+  const isBootstrapAdmin = isBootstrapAdminEmail(normalizedEmail);
+  const storedVerificationHash = isBootstrapAdmin
+    ? null
+    : hashVerificationToken(verificationToken);
+  const storedVerificationExpiry = isBootstrapAdmin
+    ? null
+    : new Date(Date.now() + VERIFICATION_TOKEN_EXPIRY_MS).toISOString();
+  const assignedRole: UserRole = isBootstrapAdmin
     ? 'admin'
     : existing?.role || 'user';
 
@@ -589,7 +602,8 @@ export function registerEmailUser(params: {
     existing.passwordHash = hashPasswordScrypt(params.password);
     existing.provider = 'email';
     existing.role = assignedRole;
-    existing.verificationToken = verificationToken;
+    existing.verificationToken = storedVerificationHash;
+    existing.verificationTokenExpiresAt = storedVerificationExpiry;
     existing.updatedAt = nowIso;
     existing.lastLoginAt = nowIso;
     existing.lastActiveAt = nowIso;
@@ -603,9 +617,10 @@ export function registerEmailUser(params: {
       provider: 'email',
       role: assignedRole,
       status: 'active',
-      emailVerified: isBootstrapAdminEmail(normalizedEmail),
+      emailVerified: isBootstrapAdmin,
       passwordHash: hashPasswordScrypt(params.password),
-      verificationToken,
+      verificationToken: storedVerificationHash,
+      verificationTokenExpiresAt: storedVerificationExpiry,
       resetToken: null,
       resetTokenExpiresAt: null,
       pdfJobsCount: 0,
@@ -941,23 +956,132 @@ export function revokeSessionByToken(token: string): boolean {
   return true;
 }
 
-export function verifyEmailWithToken(uid: string, token: string): SafeUserProfile {
+const VERIFICATION_TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GENERIC_EMAIL_VERIFICATION_ERROR =
+  'Invalid or expired email verification token.';
+
+/**
+ * Hashes an email-verification token with domain separation ('pdfnestly-verify-v1:')
+ * and prefix 'sha256-verify:' so password-reset tokens and email-verification tokens
+ * are cryptographically and structurally incompatible.
+ */
+export function hashVerificationToken(rawToken: string): string {
+  const digest = crypto
+    .createHash('sha256')
+    .update(`pdfnestly-verify-v1:${rawToken.trim()}`)
+    .digest('hex');
+  return `sha256-verify:${digest}`;
+}
+
+function verifyVerificationTokenHash(
+  rawToken: string,
+  storedTokenHash: string | null | undefined
+): boolean {
+  if (
+    typeof rawToken !== 'string' ||
+    !/^[a-f0-9]{48,64}$/i.test(rawToken.trim()) ||
+    typeof storedTokenHash !== 'string' ||
+    !storedTokenHash.startsWith('sha256-verify:')
+  ) {
+    return false;
+  }
+  const expectedHex = storedTokenHash.slice('sha256-verify:'.length);
+  if (!/^[a-f0-9]{64}$/i.test(expectedHex)) {
+    return false;
+  }
+  const candidateHash = hashVerificationToken(rawToken).slice(
+    'sha256-verify:'.length
+  );
+  const bufA = Buffer.from(candidateHash, 'hex');
+  const bufB = Buffer.from(expectedHex, 'hex');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+export function verifyEmailWithToken(
+  uid: string,
+  token: string
+): SafeUserProfile {
+  const rawToken = typeof token === 'string' ? token.trim() : '';
+  const cleanUid = typeof uid === 'string' ? uid.trim() : '';
+  const hasValidTokenShape = /^[a-f0-9]{48,64}$/i.test(rawToken);
+
   const db = loadDatabase();
-  const user = db.users.find((u) => u.uid === uid);
-  if (!user) {
-    throw new Error('User account not found.');
+
+  if (!hasValidTokenShape) {
+    if (cleanUid) {
+      const targetUser = db.users.find((u) => u.uid === cleanUid);
+      if (targetUser) {
+        const attempt = recordFailedLoginAttempt(
+          `verify_confirm:${targetUser.uid}`
+        );
+        if (attempt.locked && targetUser.verificationToken) {
+          targetUser.verificationToken = null;
+          targetUser.verificationTokenExpiresAt = null;
+          saveDatabase(db);
+        }
+      }
+    }
+    throw new Error(GENERIC_EMAIL_VERIFICATION_ERROR);
   }
-  if (user.emailVerified) {
-    return toSafeUser(user);
+
+  let matchedUser: PlatformUser | undefined;
+  for (const u of db.users) {
+    if (verifyVerificationTokenHash(rawToken, u.verificationToken)) {
+      matchedUser = u;
+    }
   }
-  if (!token || user.verificationToken !== token) {
-    throw new Error('Invalid or expired email verification token.');
+
+  if (cleanUid) {
+    const userByUid = db.users.find((u) => u.uid === cleanUid);
+    if (!userByUid) {
+      throw new Error(GENERIC_EMAIL_VERIFICATION_ERROR);
+    }
+    if (!matchedUser || matchedUser.uid !== userByUid.uid) {
+      const attempt = recordFailedLoginAttempt(
+        `verify_confirm:${userByUid.uid}`
+      );
+      if (attempt.locked && userByUid.verificationToken) {
+        userByUid.verificationToken = null;
+        userByUid.verificationTokenExpiresAt = null;
+        saveDatabase(db);
+      }
+      throw new Error(GENERIC_EMAIL_VERIFICATION_ERROR);
+    }
   }
-  user.emailVerified = true;
-  user.verificationToken = null;
-  user.updatedAt = new Date().toISOString();
+
+  if (!matchedUser || matchedUser.status === 'suspended') {
+    throw new Error(GENERIC_EMAIL_VERIFICATION_ERROR);
+  }
+
+  const confirmLock = checkBruteForceLockout(
+    `verify_confirm:${matchedUser.uid}`
+  );
+  if (confirmLock.locked) {
+    matchedUser.verificationToken = null;
+    matchedUser.verificationTokenExpiresAt = null;
+    saveDatabase(db);
+    throw new Error(GENERIC_EMAIL_VERIFICATION_ERROR);
+  }
+
+  // Enforce 24-hour expiration (if verificationTokenExpiresAt is present and in the past)
+  if (
+    matchedUser.verificationTokenExpiresAt &&
+    new Date(matchedUser.verificationTokenExpiresAt).getTime() < Date.now()
+  ) {
+    matchedUser.verificationToken = null;
+    matchedUser.verificationTokenExpiresAt = null;
+    saveDatabase(db);
+    throw new Error(GENERIC_EMAIL_VERIFICATION_ERROR);
+  }
+
+  matchedUser.emailVerified = true;
+  matchedUser.verificationToken = null;
+  matchedUser.verificationTokenExpiresAt = null;
+  matchedUser.updatedAt = new Date().toISOString();
+  clearFailedLoginAttempts(`verify_confirm:${matchedUser.uid}`);
   saveDatabase(db);
-  return toSafeUser(user);
+  return toSafeUser(matchedUser);
 }
 
 export function generateEmailVerificationTokenForUser(uid: string): string {
@@ -966,9 +1090,13 @@ export function generateEmailVerificationTokenForUser(uid: string): string {
   if (!user) {
     throw new Error('User account not found.');
   }
-  const token = crypto.randomBytes(24).toString('hex');
-  user.verificationToken = token;
+  const token = crypto.randomBytes(32).toString('hex');
+  user.verificationToken = hashVerificationToken(token);
+  user.verificationTokenExpiresAt = new Date(
+    Date.now() + VERIFICATION_TOKEN_EXPIRY_MS
+  ).toISOString();
   user.updatedAt = new Date().toISOString();
+  clearFailedLoginAttempts(`verify_confirm:${user.uid}`);
   saveDatabase(db);
   return token;
 }
@@ -1167,6 +1295,11 @@ export function updateUserProfile(
   }
   if (user.status === 'suspended') {
     throw new Error('Account is suspended.');
+  }
+  if (!user.emailVerified && user.provider === 'email') {
+    throw new Error(
+      'Please verify your email address before modifying account profile or security settings.'
+    );
   }
 
   if (typeof patch.displayName === 'string') {
@@ -2210,3 +2343,36 @@ export function pruneExpiredActivityLogs(params: {
   saveDatabase(db);
   return { prunedEvents, prunedJobs, auditLog };
 }
+
+export function recordAdminEmailDiagnosticAuditLog(params: {
+  adminUid: string;
+  adminEmail: string;
+  provider: string | null;
+  connectionVerified: boolean;
+  messageSubmitted: boolean;
+  errorCategory: string;
+}): AdminAuditLogRecord {
+  const db = loadDatabase();
+  const auditLog = appendAdminAuditLogInternal(db, {
+    adminUid: params.adminUid,
+    adminEmail: params.adminEmail,
+    action: 'email.diagnostics_tested',
+    targetType: 'system',
+    targetId: 'smtp_diagnostics',
+    targetLabel: `SMTP Test (${params.adminEmail})`,
+    summary: `Executed SMTP diagnostic test to ${params.adminEmail} (provider=${
+      params.provider || 'unconfigured'
+    }, connectionVerified=${params.connectionVerified}, messageSubmitted=${
+      params.messageSubmitted
+    }, category=${params.errorCategory}).`,
+    metadata: {
+      provider: params.provider,
+      connectionVerified: params.connectionVerified,
+      messageSubmitted: params.messageSubmitted,
+      errorCategory: params.errorCategory,
+    },
+  });
+  saveDatabase(db);
+  return auditLog;
+}
+

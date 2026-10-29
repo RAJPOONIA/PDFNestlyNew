@@ -22,6 +22,7 @@ import {
   Lock,
   BarChart3,
   Server,
+  Mail,
 } from 'lucide-react';
 import { useAuth, ClientUserProfile } from '@/components/AuthProvider';
 import { PDF_TOOLS_REGISTRY } from '@/lib/tools-registry';
@@ -221,6 +222,31 @@ export default function AdminPlatformPage() {
   });
   const [isSavingSettings, setIsSavingSettings] = useState(false);
 
+  // Email & SMTP Diagnostics state
+  const [emailDiagConfig, setEmailDiagConfig] = useState<{
+    hostPresent: boolean;
+    portPresent: boolean;
+    userPresent: boolean;
+    passwordPresent: boolean;
+    fromPresent: boolean;
+    allRequiredPresent: boolean;
+    configuredHost: string | null;
+    configuredPort: number | null;
+    configuredFromAddress: string | null;
+    activeProvider: string | null;
+  } | null>(null);
+  const [emailDiagResult, setEmailDiagResult] = useState<{
+    connectionVerified: boolean;
+    messageSubmitted?: boolean;
+    messageId?: string | null;
+    errorCategory: string;
+    sanitizedMessage: string;
+    recipient?: string;
+    deliveryDistinctionNote?: string;
+  } | null>(null);
+  const [isCheckingSmtp, setIsCheckingSmtp] = useState(false);
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+
   const fetchOverviewAndSettings = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -304,6 +330,106 @@ export default function AdminPlatformPage() {
     }
   }, [eventFilterType, eventFilterTool, eventFilterStatus, eventSearch]);
 
+  const fetchEmailDiagnostics = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/email-diagnostics', {
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.configStatus) {
+          setEmailDiagConfig(data.configStatus);
+        }
+      }
+    } catch {
+      // Ignore network errors
+    }
+  }, []);
+
+  const handleVerifySmtpConnection = async () => {
+    setIsCheckingSmtp(true);
+    setEmailDiagResult(null);
+    try {
+      const res = await fetch(
+        '/api/admin/email-diagnostics?verifyConnection=true',
+        { cache: 'no-store' }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setEmailDiagResult({
+          connectionVerified: false,
+          errorCategory: 'rate_limited',
+          sanitizedMessage:
+            data.error || 'Unable to verify SMTP connection right now.',
+        });
+        return;
+      }
+      if (data.configStatus) {
+        setEmailDiagConfig(data.configStatus);
+      }
+      if (data.connectionCheck) {
+        setEmailDiagResult({
+          connectionVerified: data.connectionCheck.verified,
+          errorCategory: data.connectionCheck.errorCategory,
+          sanitizedMessage: data.connectionCheck.sanitizedMessage,
+        });
+      }
+    } catch {
+      setEmailDiagResult({
+        connectionVerified: false,
+        errorCategory: 'smtp_error',
+        sanitizedMessage: 'Failed to reach SMTP diagnostics endpoint.',
+      });
+    } finally {
+      setIsCheckingSmtp(false);
+    }
+  };
+
+  const handleSendAdminTestEmail = async () => {
+    setIsSendingTestEmail(true);
+    setEmailDiagResult(null);
+    try {
+      const res = await fetch('/api/admin/email-diagnostics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (res.status === 429 || res.status === 400) {
+        setEmailDiagResult({
+          connectionVerified: false,
+          messageSubmitted: false,
+          errorCategory: 'rate_limited',
+          sanitizedMessage: data.error || 'Diagnostic test email rejected.',
+        });
+        return;
+      }
+      if (data.configStatus) {
+        setEmailDiagConfig(data.configStatus);
+      }
+      setEmailDiagResult({
+        connectionVerified: Boolean(data.connectionVerified),
+        messageSubmitted: Boolean(data.messageSubmitted),
+        messageId: data.messageId || null,
+        errorCategory: data.errorCategory || 'smtp_error',
+        sanitizedMessage:
+          data.sanitizedMessage || 'Diagnostic test completed.',
+        recipient: data.recipient,
+        deliveryDistinctionNote: data.deliveryDistinctionNote,
+      });
+      await fetchEventsAndJobs();
+    } catch {
+      setEmailDiagResult({
+        connectionVerified: false,
+        messageSubmitted: false,
+        errorCategory: 'smtp_error',
+        sanitizedMessage: 'Failed to execute SMTP test email request.',
+      });
+    } finally {
+      setIsSendingTestEmail(false);
+    }
+  };
+
   useEffect(() => {
     if (!authLoading) {
       if (!user) {
@@ -315,6 +441,7 @@ export default function AdminPlatformPage() {
         fetchOverviewAndSettings();
         fetchUsers();
         fetchEventsAndJobs();
+        fetchEmailDiagnostics();
       }
     }
   }, [
@@ -323,6 +450,7 @@ export default function AdminPlatformPage() {
     fetchOverviewAndSettings,
     fetchUsers,
     fetchEventsAndJobs,
+    fetchEmailDiagnostics,
   ]);
 
   const handleOpenUserDetail = async (uid: string) => {
@@ -1695,6 +1823,142 @@ export default function AdminPlatformPage() {
                     Verified
                   </span>
                 </div>
+              </div>
+
+              {/* Private Email SMTP Diagnostics & Test Delivery Panel */}
+              <div className="pt-4 border-t border-[#E4E4E7] dark:border-[#3F3F46] space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Mail className="w-4 h-4 text-[#B91C1C]" />
+                    <h3 className="text-sm font-bold text-[#18181B] dark:text-[#FAFAFA]">
+                      Private Email SMTP Diagnostics
+                    </h3>
+                  </div>
+                  <span
+                    className={`px-2 py-0.5 rounded-md text-[11px] font-bold ${
+                      emailDiagConfig?.allRequiredPresent
+                        ? 'bg-[#16865B]/10 text-[#16865B]'
+                        : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                    }`}
+                  >
+                    {emailDiagConfig?.allRequiredPresent
+                      ? 'Variables Present'
+                      : 'SMTP Unconfigured'}
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-[#71717A] leading-relaxed">
+                  Verifies server-side Namecheap Private Email SMTP variables
+                  without exposing secrets. Test emails are strictly sent only to
+                  your authenticated admin address (<strong>{user?.email}</strong>
+                  ).
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                  {[
+                    {
+                      label: 'PRIVATE_EMAIL_SMTP_HOST',
+                      present: emailDiagConfig?.hostPresent,
+                    },
+                    {
+                      label: 'PRIVATE_EMAIL_SMTP_PORT',
+                      present: emailDiagConfig?.portPresent,
+                    },
+                    {
+                      label: 'PRIVATE_EMAIL_SMTP_USER',
+                      present: emailDiagConfig?.userPresent,
+                    },
+                    {
+                      label: 'PRIVATE_EMAIL_SMTP_PASSWORD',
+                      present: emailDiagConfig?.passwordPresent,
+                    },
+                    {
+                      label: 'PRIVATE_EMAIL_FROM',
+                      present: emailDiagConfig?.fromPresent,
+                    },
+                  ].map((item) => (
+                    <div
+                      key={item.label}
+                      className="px-2.5 py-1.5 rounded-lg bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] flex items-center justify-between gap-2"
+                    >
+                      <span className="font-mono text-[10px] truncate">
+                        {item.label}
+                      </span>
+                      <span
+                        className={`font-bold text-[10px] ${
+                          item.present
+                            ? 'text-[#16865B]'
+                            : 'text-[#D64545]'
+                        }`}
+                      >
+                        {item.present ? 'Present' : 'Missing'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={isCheckingSmtp || isSendingTestEmail}
+                    onClick={handleVerifySmtpConnection}
+                    className="px-3 py-1.5 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] hover:border-[#B91C1C] text-xs font-semibold cursor-pointer disabled:opacity-50"
+                  >
+                    {isCheckingSmtp
+                      ? 'Checking SSL/TLS...'
+                      : 'Verify SMTP Connection'}
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isCheckingSmtp || isSendingTestEmail}
+                    onClick={handleSendAdminTestEmail}
+                    className="px-3 py-1.5 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] text-white text-xs font-semibold cursor-pointer disabled:opacity-50"
+                  >
+                    {isSendingTestEmail
+                      ? 'Sending Test Email...'
+                      : 'Send Test Email to Admin'}
+                  </button>
+                </div>
+
+                {emailDiagResult && (
+                  <div
+                    role="status"
+                    className={`p-3 rounded-xl border text-xs space-y-1.5 ${
+                      emailDiagResult.messageSubmitted ||
+                      (emailDiagResult.connectionVerified &&
+                        emailDiagResult.messageSubmitted === undefined)
+                        ? 'bg-[#16865B]/10 border-[#16865B]/30 text-[#18181B] dark:text-[#FAFAFA]'
+                        : 'bg-[#D64545]/10 border-[#D64545]/30 text-[#D64545] dark:text-[#F87171]'
+                    }`}
+                  >
+                    <div className="font-bold flex items-center justify-between">
+                      <span>
+                        Category:{' '}
+                        <code className="font-mono">
+                          {emailDiagResult.errorCategory}
+                        </code>
+                      </span>
+                      <span>
+                        TLS/Auth:{' '}
+                        {emailDiagResult.connectionVerified ? 'OK' : 'Failed'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed">
+                      {emailDiagResult.sanitizedMessage}
+                    </p>
+                    {emailDiagResult.messageId && (
+                      <div className="text-[10px] font-mono text-[#71717A]">
+                        SMTP Message-ID: {emailDiagResult.messageId}
+                      </div>
+                    )}
+                    {emailDiagResult.deliveryDistinctionNote && (
+                      <p className="text-[10px] text-[#71717A] italic">
+                        {emailDiagResult.deliveryDistinctionNote}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

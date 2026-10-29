@@ -82,8 +82,12 @@ export default function UserDashboardPage() {
     text: string;
   } | null>(null);
 
-  // Verification link state
-  const [verifyUrl, setVerifyUrl] = useState<string | null>(null);
+  // Verification email status state
+  const [isSendingVerifyEmail, setIsSendingVerifyEmail] = useState(false);
+  const [verifyEmailNotice, setVerifyEmailNotice] = useState<{
+    type: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
 
   // Delete account modal state
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -160,7 +164,9 @@ export default function UserDashboardPage() {
     }
   };
 
-  const handleGenerateVerifyLink = async () => {
+  const handleResendVerificationEmail = async () => {
+    setIsSendingVerifyEmail(true);
+    setVerifyEmailNotice(null);
     try {
       const res = await fetch('/api/auth/verify-email', {
         method: 'POST',
@@ -168,11 +174,28 @@ export default function UserDashboardPage() {
         body: JSON.stringify({ action: 'resend' }),
       });
       const json = await res.json();
-      if (res.ok && json.verificationUrl) {
-        setVerifyUrl(json.verificationUrl);
+      if (!res.ok) {
+        setVerifyEmailNotice({
+          type: 'error',
+          text: json.error || 'Unable to send verification email.',
+        });
+        return;
       }
+      setVerifyEmailNotice({
+        type: json.emailSent ? 'success' : 'warning',
+        text:
+          json.message ||
+          (json.emailSent
+            ? 'Verification email sent! Please check your inbox and spam folder.'
+            : 'Outbound email delivery is not yet configured on this server.'),
+      });
     } catch {
-      // Ignore
+      setVerifyEmailNotice({
+        type: 'error',
+        text: 'Unable to request verification email right now.',
+      });
+    } finally {
+      setIsSendingVerifyEmail(false);
     }
   };
 
@@ -259,11 +282,14 @@ export default function UserDashboardPage() {
                 ) : (
                   <button
                     type="button"
-                    onClick={handleGenerateVerifyLink}
-                    className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:underline cursor-pointer"
+                    disabled={isSendingVerifyEmail}
+                    onClick={handleResendVerificationEmail}
+                    className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 hover:underline cursor-pointer disabled:opacity-60"
                   >
                     <AlertCircle className="w-3 h-3" />
-                    Verify Email Now
+                    {isSendingVerifyEmail
+                      ? 'Sending Verification Email...'
+                      : 'Send Verification Email'}
                   </button>
                 )}
               </div>
@@ -283,14 +309,18 @@ export default function UserDashboardPage() {
                 </span>
               </div>
 
-              {verifyUrl && (
-                <div className="pt-1">
-                  <Link
-                    href={verifyUrl}
-                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#16865B] text-white text-xs font-semibold hover:bg-[#126E4A]"
-                  >
-                    Click here to complete email verification →
-                  </Link>
+              {verifyEmailNotice && (
+                <div
+                  role="status"
+                  className={`mt-2 p-2.5 rounded-xl border text-xs font-medium ${
+                    verifyEmailNotice.type === 'success'
+                      ? 'bg-[#16865B]/10 border-[#16865B]/30 text-[#16865B] dark:text-[#34D399]'
+                      : verifyEmailNotice.type === 'warning'
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-800 dark:text-amber-300'
+                      : 'bg-[#D64545]/10 border-[#D64545]/30 text-[#D64545] dark:text-[#F87171]'
+                  }`}
+                >
+                  {verifyEmailNotice.text}
                 </div>
               )}
             </div>
@@ -608,6 +638,31 @@ export default function UserDashboardPage() {
                   <h2 className="text-base font-bold text-[#18181B] dark:text-[#FAFAFA]">
                     Update Profile & Password
                   </h2>
+
+                  {!profile.emailVerified && profile.provider === 'email' && (
+                    <div
+                      role="alert"
+                      className="p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-xs text-amber-900 dark:text-amber-200 space-y-2"
+                    >
+                      <div className="font-semibold flex items-center gap-1.5">
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>Email Verification Required for Account Changes</span>
+                      </div>
+                      <p className="leading-relaxed">
+                        Please verify your email address (<strong>{profile.email}</strong>) before modifying your profile name, avatar, or password.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={isSendingVerifyEmail}
+                        onClick={handleResendVerificationEmail}
+                        className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs cursor-pointer disabled:opacity-50"
+                      >
+                        {isSendingVerifyEmail
+                          ? 'Sending Verification Email...'
+                          : 'Resend Verification Email'}
+                      </button>
+                    </div>
+                  )}
 
                   {profileNotice && (
                     <div

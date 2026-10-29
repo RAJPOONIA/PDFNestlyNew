@@ -8,6 +8,7 @@ import { clearSessionCookie, getClientIp } from '@/lib/server-auth';
 import {
   isPasswordResetEmailConfigured,
   sendPasswordResetEmail,
+  classifySmtpError,
 } from '@/lib/password-reset-mailer';
 import { syncFirebaseUserPasswordAndRevokeSessions } from '@/lib/firebase-admin';
 
@@ -139,25 +140,41 @@ export async function POST(req: NextRequest) {
     const emailDeliveryConfigured = isPasswordResetEmailConfigured();
     const resetReq = createPasswordResetRequest(email);
 
+    let deliveryFailed = false;
     if (emailDeliveryConfigured && resetReq.resetToken) {
       const origin = resolveAppOrigin(req);
       const resetUrl = `${origin}/forgot-password?token=${encodeURIComponent(
         resetReq.resetToken
       )}`;
-      await sendPasswordResetEmail({
-        to: email,
-        resetUrl,
-        expiresInMinutes: resetReq.expiresInMinutes,
-      });
+      try {
+        const sendResult = await sendPasswordResetEmail({
+          to: email,
+          resetUrl,
+          expiresInMinutes: resetReq.expiresInMinutes,
+        });
+        if (!sendResult.sent) {
+          deliveryFailed = true;
+        }
+      } catch (err) {
+        deliveryFailed = true;
+        const classified = classifySmtpError(err);
+        console.error(
+          `[PasswordResetMailer] Outbound email delivery failed (category=${classified.category})`
+        );
+      }
     }
+
+    const emailSent = emailDeliveryConfigured && !deliveryFailed;
 
     return NextResponse.json(
       {
         accepted: true,
-        emailSent: emailDeliveryConfigured,
+        emailSent,
         emailDeliveryConfigured,
-        message: emailDeliveryConfigured
+        message: emailSent
           ? 'If an account exists for that email address, we have sent password reset instructions to your inbox. Please check your email and follow the link within 15 minutes.'
+          : deliveryFailed
+          ? 'We could not complete outbound email delivery at this moment. Please try again shortly or contact support@pdfnestly.com.'
           : 'If an account exists for that email address, your reset request was recorded. Outbound email delivery is not yet configured on this server—please check your email once an administrator configures a transactional email provider.',
       },
       { headers: SECURITY_HEADERS }

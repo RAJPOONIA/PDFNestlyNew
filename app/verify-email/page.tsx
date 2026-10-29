@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, Suspense } from 'react';
+import React, { useEffect, useState, useRef, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { CheckCircle2, AlertCircle, RefreshCw, ArrowRight } from 'lucide-react';
@@ -8,25 +8,37 @@ import { useAuth } from '@/components/AuthProvider';
 
 function VerifyEmailInner() {
   const searchParams = useSearchParams();
-  const uid = searchParams?.get('uid') || '';
-  const token = searchParams?.get('token') || '';
   const { refreshSession } = useAuth();
+  const hasVerifiedRef = useRef(false);
 
-  const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'success' | 'error'>(
+    'loading'
+  );
   const [message, setMessage] = useState('Verifying your email address...');
 
   useEffect(() => {
-    if (!uid || !token) {
+    if (hasVerifiedRef.current) return;
+    const uid = (searchParams?.get('uid') || '').trim();
+    const token = (searchParams?.get('token') || '').trim();
+
+    if (typeof window !== 'undefined' && (uid || token)) {
+      window.history.replaceState({}, document.title, '/verify-email');
+    }
+
+    if (!token) {
       setStatus('error');
-      setMessage('Missing verification parameters in URL.');
+      setMessage('Missing or invalid email verification link.');
       return;
     }
+
+    hasVerifiedRef.current = true;
 
     (async () => {
       try {
         const res = await fetch('/api/auth/verify-email', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          referrerPolicy: 'no-referrer',
           body: JSON.stringify({ action: 'verify', uid, token }),
         });
         const data = await res.json();
@@ -45,7 +57,7 @@ function VerifyEmailInner() {
         );
       }
     })();
-  }, [uid, token, refreshSession]);
+  }, [searchParams, refreshSession]);
 
   return (
     <div className="min-h-[calc(100vh-8rem)] flex items-center justify-center px-6 py-12 bg-[#FAFAFA] dark:bg-[#09090B]">

@@ -35,14 +35,14 @@ function AuthFormInner({ initialMode }: { initialMode: 'login' | 'signup' }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [verificationLink, setVerificationLink] = useState<string | null>(null);
+  const [awaitingEmailCheck, setAwaitingEmailCheck] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
   useEffect(() => {
-    if (user && !verificationLink) {
+    if (user && !awaitingEmailCheck) {
       router.push(redirectTarget);
     }
-  }, [user, verificationLink, router, redirectTarget]);
+  }, [user, awaitingEmailCheck, router, redirectTarget]);
 
   const handleGoogleSignIn = async () => {
     setErrorMessage('');
@@ -90,11 +90,11 @@ function AuthFormInner({ initialMode }: { initialMode: 'login' | 'signup' }) {
           password,
           displayName,
         });
-        if (reg.verificationUrl && !reg.user.emailVerified) {
-          setVerificationLink(reg.verificationUrl);
+        if (!reg.user.emailVerified) {
+          setAwaitingEmailCheck(true);
           setStatusMessage(
             reg.message ||
-              'Account created! Verify your email below or continue to your dashboard.'
+              'Account created! Please check your email inbox for your verification link.'
           );
         } else {
           router.push(redirectTarget);
@@ -190,20 +190,14 @@ function AuthFormInner({ initialMode }: { initialMode: 'login' | 'signup' }) {
               <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{statusMessage}</span>
             </div>
-            {verificationLink && (
+            {awaitingEmailCheck && (
               <div className="flex flex-wrap items-center gap-2 pt-1">
                 <Link
-                  href={verificationLink}
+                  href={redirectTarget}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#16865B] text-white font-semibold hover:bg-[#126E4A] transition-colors"
                 >
-                  <span>Verify Email Address Now</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
-                <Link
-                  href={redirectTarget}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-[#E4E4E7] dark:border-[#3F3F46] font-semibold hover:bg-[#F4F4F5] dark:hover:bg-[#27272A] transition-colors"
-                >
                   <span>Continue to Dashboard</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
                 </Link>
               </div>
             )}
