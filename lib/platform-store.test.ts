@@ -38,6 +38,8 @@ import {
   setEmailVerificationTestTransport,
   setMockSmtpTransport,
   classifySmtpError,
+  resolvePrivateEmailConnectionParams,
+  getPrivateEmailConfigStatus,
   type PasswordResetEmailPayload,
   type EmailVerificationPayload,
   type MockSmtpSendMailOptions,
@@ -800,9 +802,74 @@ test('Email verification security, domain separation from password-reset tokens,
 
   setMockSmtpTransport(null);
 
+  // 9. Verify PRIVATE_EMAIL_SMTP_IP connection override behavior and strict TLS settings
+  const prevEnv = {
+    EMAIL_PROVIDER: process.env.EMAIL_PROVIDER,
+    PRIVATE_EMAIL_SMTP_HOST: process.env.PRIVATE_EMAIL_SMTP_HOST,
+    PRIVATE_EMAIL_SMTP_IP: process.env.PRIVATE_EMAIL_SMTP_IP,
+    PRIVATE_EMAIL_SMTP_PORT: process.env.PRIVATE_EMAIL_SMTP_PORT,
+    PRIVATE_EMAIL_SMTP_USER: process.env.PRIVATE_EMAIL_SMTP_USER,
+    PRIVATE_EMAIL_SMTP_PASSWORD: process.env.PRIVATE_EMAIL_SMTP_PASSWORD,
+    PRIVATE_EMAIL_FROM: process.env.PRIVATE_EMAIL_FROM,
+  };
+
+  try {
+    process.env.EMAIL_PROVIDER = 'private_email';
+    process.env.PRIVATE_EMAIL_SMTP_HOST = 'mail.privateemail.com';
+    delete process.env.PRIVATE_EMAIL_SMTP_IP;
+    process.env.PRIVATE_EMAIL_SMTP_PORT = '465';
+    process.env.PRIVATE_EMAIL_SMTP_USER = 'rajpoonia@pdfnestly.com';
+    process.env.PRIVATE_EMAIL_SMTP_PASSWORD = 'TestOnlyPasswordNotReal123!';
+    process.env.PRIVATE_EMAIL_FROM = 'PDFNestly Support <support@pdfnestly.com>';
+
+    // Without PRIVATE_EMAIL_SMTP_IP: connects directly to PRIVATE_EMAIL_SMTP_HOST
+    const defaultParams = resolvePrivateEmailConnectionParams();
+    assert.equal(defaultParams.host, 'mail.privateemail.com');
+    assert.equal(defaultParams.port, 465);
+    assert.equal(defaultParams.secure, true);
+    assert.equal(defaultParams.tls.servername, 'mail.privateemail.com');
+    assert.equal(defaultParams.tls.rejectUnauthorized, true);
+    assert.equal(defaultParams.tls.minVersion, 'TLSv1.2');
+
+    const defaultStatus = getPrivateEmailConfigStatus();
+    assert.equal(defaultStatus.ipOverridePresent, false);
+    assert.equal(defaultStatus.configuredIpOverride, null);
+    assert.equal(defaultStatus.configuredHost, 'mail.privateemail.com');
+
+    // With PRIVATE_EMAIL_SMTP_IP set: connects to the IP override, while TLS servername remains PRIVATE_EMAIL_SMTP_HOST
+    const testOverrideIp = '192.0.2.25'; // RFC 5737 TEST-NET-1 documentation address
+    process.env.PRIVATE_EMAIL_SMTP_IP = `  ${testOverrideIp}  `;
+
+    const overrideParams = resolvePrivateEmailConnectionParams();
+    assert.equal(overrideParams.host, testOverrideIp);
+    assert.equal(overrideParams.port, 465);
+    assert.equal(overrideParams.secure, true);
+    assert.equal(
+      overrideParams.tls.servername,
+      'mail.privateemail.com',
+      'TLS servername must always be PRIVATE_EMAIL_SMTP_HOST, never the IP override'
+    );
+    assert.equal(overrideParams.tls.rejectUnauthorized, true);
+    assert.equal(overrideParams.tls.minVersion, 'TLSv1.2');
+
+    const overrideStatus = getPrivateEmailConfigStatus();
+    assert.equal(overrideStatus.ipOverridePresent, true);
+    assert.equal(overrideStatus.configuredIpOverride, testOverrideIp);
+    assert.equal(overrideStatus.configuredHost, 'mail.privateemail.com');
+  } finally {
+    for (const [k, v] of Object.entries(prevEnv)) {
+      if (v === undefined) {
+        delete process.env[k];
+      } else {
+        process.env[k] = v;
+      }
+    }
+  }
+
   if (fs.existsSync(testDbFile)) {
     fs.unlinkSync(testDbFile);
   }
 });
+
 
 

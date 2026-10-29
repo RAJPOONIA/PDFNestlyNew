@@ -115,8 +115,10 @@ export interface PrivateEmailSmtpConfigStatus {
   userPresent: boolean;
   passwordPresent: boolean;
   fromPresent: boolean;
+  ipOverridePresent: boolean;
   allRequiredPresent: boolean;
   configuredHost: string | null;
+  configuredIpOverride: string | null;
   configuredPort: number | null;
   configuredFromAddress: string | null;
   activeProvider: EmailProviderType | null;
@@ -124,6 +126,7 @@ export interface PrivateEmailSmtpConfigStatus {
 
 function getPrivateEmailEnv() {
   const host = (process.env.PRIVATE_EMAIL_SMTP_HOST || '').trim();
+  const ip = (process.env.PRIVATE_EMAIL_SMTP_IP || '').trim();
   const portRaw = (process.env.PRIVATE_EMAIL_SMTP_PORT || '').trim();
   const user = (process.env.PRIVATE_EMAIL_SMTP_USER || '').trim();
   const password = process.env.PRIVATE_EMAIL_SMTP_PASSWORD || '';
@@ -137,12 +140,14 @@ function getPrivateEmailEnv() {
 
   return {
     host,
+    ip,
     portRaw,
     port: validPort,
     user,
     password,
     from,
     hostPresent: host.length > 0,
+    ipPresent: ip.length > 0,
     portPresent: validPort !== null,
     userPresent: user.length > 0,
     passwordPresent: password.trim().length > 0,
@@ -160,7 +165,7 @@ function getPrivateEmailEnv() {
  * Resolves the single active email provider without fallback duplication.
  * Priority:
  * 1. Explicit EMAIL_PROVIDER env var if set ('private_email' | 'resend' | 'sendgrid' | 'postmark' | 'webhook')
- * 2. Namecheap Private Email SMTP if all 5 PRIVATE_EMAIL_* env vars are present
+ * 2. Namecheap Private Email SMTP if all 5 required PRIVATE_EMAIL_* env vars are present
  * 3. Resend -> SendGrid -> Postmark -> Webhook
  */
 export function resolveActiveEmailProvider(): EmailProviderType | null {
@@ -204,8 +209,10 @@ export function getPrivateEmailConfigStatus(): PrivateEmailSmtpConfigStatus {
     userPresent: smtp.userPresent,
     passwordPresent: smtp.passwordPresent,
     fromPresent: smtp.fromPresent,
+    ipOverridePresent: smtp.ipPresent,
     allRequiredPresent: smtp.isConfigured,
     configuredHost: smtp.hostPresent ? smtp.host : null,
+    configuredIpOverride: smtp.ipPresent ? smtp.ip : null,
     configuredPort: smtp.port,
     configuredFromAddress: smtp.fromPresent ? smtp.from : null,
     activeProvider,
@@ -382,25 +389,38 @@ export function classifySmtpError(err: unknown): {
   };
 }
 
-function createPrivateEmailTransport(): MockSmtpTransportAdapter {
-  if (customMockSmtpTransport) {
-    return customMockSmtpTransport;
-  }
+export interface PrivateEmailConnectionParams {
+  host: string;
+  port: number;
+  secure: boolean;
+  tls: {
+    rejectUnauthorized: true;
+    minVersion: 'TLSv1.2';
+    servername: string;
+  };
+  connectionTimeout: number;
+  greetingTimeout: number;
+  socketTimeout: number;
+}
 
+/**
+ * Resolves the non-secret Nodemailer connection and TLS parameters for Private Email SMTP.
+ * Uses PRIVATE_EMAIL_SMTP_IP as the TCP connection host when configured (to bypass VPS DNS timeouts),
+ * while always setting TLS `servername` to PRIVATE_EMAIL_SMTP_HOST for SNI and strict certificate validation.
+ * Note: Do not assume an SMTP IP override is permanent; update PRIVATE_EMAIL_SMTP_IP if the provider rotates IPs.
+ */
+export function resolvePrivateEmailConnectionParams(): PrivateEmailConnectionParams {
   const smtp = getPrivateEmailEnv();
   if (!smtp.isConfigured || !smtp.port) {
     throw new Error('missing_config: Private Email SMTP variables are incomplete.');
   }
 
-  // Port 465 uses implicit SSL/TLS (secure: true) with strict certificate verification.
-  const transporter = nodemailer.createTransport({
-    host: smtp.host,
+  const connectionHost = smtp.ipPresent ? smtp.ip : smtp.host;
+
+  return {
+    host: connectionHost,
     port: smtp.port,
     secure: smtp.port === 465,
-    auth: {
-      user: smtp.user,
-      pass: smtp.password,
-    },
     tls: {
       rejectUnauthorized: true,
       minVersion: 'TLSv1.2',
@@ -409,6 +429,32 @@ function createPrivateEmailTransport(): MockSmtpTransportAdapter {
     connectionTimeout: 10_000,
     greetingTimeout: 10_000,
     socketTimeout: 15_000,
+  };
+}
+
+export function createPrivateEmailTransport(): MockSmtpTransportAdapter {
+  if (customMockSmtpTransport) {
+    return customMockSmtpTransport;
+  }
+
+  const smtp = getPrivateEmailEnv();
+  const connectionParams = resolvePrivateEmailConnectionParams();
+
+  // Port 465 uses implicit SSL/TLS (secure: true) with strict certificate verification.
+  // When PRIVATE_EMAIL_SMTP_IP is set, Nodemailer connects to that IP while TLS SNI
+  // and certificate verification still validate against PRIVATE_EMAIL_SMTP_HOST.
+  const transporter = nodemailer.createTransport({
+    host: connectionParams.host,
+    port: connectionParams.port,
+    secure: connectionParams.secure,
+    auth: {
+      user: smtp.user,
+      pass: smtp.password,
+    },
+    tls: connectionParams.tls,
+    connectionTimeout: connectionParams.connectionTimeout,
+    greetingTimeout: connectionParams.greetingTimeout,
+    socketTimeout: connectionParams.socketTimeout,
   });
 
   return {
