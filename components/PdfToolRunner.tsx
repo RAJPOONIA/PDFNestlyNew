@@ -57,8 +57,18 @@ import {
 } from '@/lib/pdf-engine-client';
 import { PdfEditorWorkspace } from './PdfEditorWorkspace';
 import {
+  VisualCropWorkspace,
+  CropScopeMode,
+} from './VisualCropWorkspace';
+import {
+  PageOrganizerWorkspace,
+  OrganizerPageItem,
+} from './PageOrganizerWorkspace';
+import { FillFormsWorkspace } from './FillFormsWorkspace';
+import {
   loadCurrentDocument,
   storeCurrentDocument,
+  clearCurrentDocument,
 } from '@/lib/document-store';
 
 interface PdfToolRunnerProps {
@@ -91,6 +101,8 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
   const [fileName, setFileName] = useState<string>('');
   const [inspection, setInspection] = useState<PdfInspectionReport | null>(null);
   const [thumbnails, setThumbnails] = useState<PageThumbnailInfo[]>([]);
+  const [isInspectingPdf, setIsInspectingPdf] = useState<boolean>(false);
+  const [isRenderingThumbs, setIsRenderingThumbs] = useState<boolean>(false);
 
   // Auto-load active document from shared document store if present and no file loaded yet
   useEffect(() => {
@@ -149,9 +161,9 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
   );
 
   // Page Organizer instruction list (for Rotate, Delete, Reorder, Organize)
-  const [pageInstructions, setPageInstructions] = useState<
-    Array<PageOrganizerInstruction & { thumbUrl?: string; label: string }>
-  >([]);
+  const [pageInstructions, setPageInstructions] = useState<OrganizerPageItem[]>(
+    []
+  );
 
   // Tool-specific options
   const [mergeFlattenForms, setMergeFlattenForms] = useState<boolean>(false);
@@ -169,6 +181,9 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
     bottom: 36,
     left: 36,
   });
+  const [cropScopeMode, setCropScopeMode] = useState<CropScopeMode>('all');
+  const [cropActivePage, setCropActivePage] = useState<number>(1);
+  const [cropCustomRange, setCropCustomRange] = useState<string>('1');
   const [pageNumberOptions, setPageNumberOptions] = useState({
     format: 'page-x-of-y' as const,
     position: 'bottom-center' as const,
@@ -258,10 +273,16 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
   // When primary pdfBytes changes, inspect & render thumbnails (with graceful fallback for password-protected or damaged PDFs)
   useEffect(() => {
     if (!pdfBytes) {
+      setInspection(null);
+      setThumbnails([]);
+      setPageInstructions([]);
       return;
     }
 
     let cancelled = false;
+    setIsInspectingPdf(true);
+    setIsRenderingThumbs(true);
+
     (async () => {
       try {
         let info: PdfInspectionReport;
@@ -292,24 +313,16 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           };
         }
 
-        let thumbs: PageThumbnailInfo[] = [];
-        try {
-          thumbs = await renderPdfThumbnails(pdfBytes, 0.35);
-        } catch {
-          // Encrypted PDF (awaiting password in Unlock tool) or damaged stream (awaiting Repair tool)
-          thumbs = info.pages.map((p) => ({
-            pageNumber: p.pageNumber,
-            widthPt: p.widthPt,
-            heightPt: p.heightPt,
-            rotation: p.rotation,
-            dataUrl: '',
-          }));
-        }
-
         if (cancelled) return;
         setInspection(info);
-        setThumbnails(thumbs);
-        setPageRangeInput(info.pageCount <= 1 ? '1' : `1-${Math.min(2, info.pageCount)}`);
+        setIsInspectingPdf(false);
+        setCropActivePage(1);
+        setCropCustomRange(
+          info.pageCount <= 1 ? '1' : `1-${Math.min(2, info.pageCount)}`
+        );
+        setPageRangeInput(
+          info.pageCount <= 1 ? '1' : `1-${Math.min(2, info.pageCount)}`
+        );
 
         // Initialize form values
         const initialForms: Record<string, string | boolean> = {};
@@ -328,10 +341,39 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           creator: info.creator,
         }));
 
-        // Initialize page organizer instructions
+        // Initialize page organizer instructions immediately so cards appear right away
+        setPageInstructions(
+          info.pages.map((p, idx) => ({
+            id: `page-${idx + 1}`,
+            type: 'existing',
+            originalPageIndex: idx,
+            extraRotation: 0,
+            thumbUrl: undefined,
+            label: `Page ${p.pageNumber}`,
+          }))
+        );
+
+        let thumbs: PageThumbnailInfo[] = [];
+        try {
+          thumbs = await renderPdfThumbnails(pdfBytes, 0.45);
+        } catch {
+          thumbs = info.pages.map((p) => ({
+            pageNumber: p.pageNumber,
+            widthPt: p.widthPt,
+            heightPt: p.heightPt,
+            rotation: p.rotation,
+            dataUrl: '',
+          }));
+        }
+
+        if (cancelled) return;
+        setThumbnails(thumbs);
+        setIsRenderingThumbs(false);
+
         const pageList = thumbs.length > 0 ? thumbs : info.pages;
         setPageInstructions(
           pageList.map((t, idx) => ({
+            id: `page-${idx + 1}`,
             type: 'existing',
             originalPageIndex: idx,
             extraRotation: 0,
@@ -354,6 +396,8 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
         }
       } catch (err) {
         if (!cancelled) {
+          setIsInspectingPdf(false);
+          setIsRenderingThumbs(false);
           setErrorMessage(
             err instanceof Error ? err.message : 'Unable to inspect uploaded PDF.'
           );
@@ -528,11 +572,14 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
     setIsProcessing(true);
 
     try {
+      const rawName = (
+        fileName ||
+        officeFile?.name ||
+        'pdfnestly-document'
+      ).replace(/\.[^.]+$/, '');
       const baseName =
-        (fileName || officeFile?.name || 'pdfnestly-document').replace(
-          /\.[^.]+$/,
-          ''
-        ) || 'document';
+        rawName.replace(/^download\s*(\(\d+\))?\s*[-_]*/i, 'document-')
+          .replace(/[-_]+$/, '') || 'document';
 
       // 1. Merge PDF
       if (tool.slug === 'merge-pdf') {
@@ -667,12 +714,14 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
       ) {
         if (!pdfBytes) throw new Error('Please upload or load a PDF file first.');
         const outBytes = await buildOrganizedPdf(pdfBytes, pageInstructions);
+        const outName = `${baseName}-organized.pdf`;
+        storeCurrentDocument({ name: outName, bytes: outBytes }, `tool:${tool.slug}`).catch(() => {});
         setResultDownload({
           url: URL.createObjectURL(toPdfBlob(outBytes)),
-          fileName: `${baseName}-${tool.slug}.pdf`,
+          fileName: outName,
           originalBytes: pdfBytes.byteLength,
           outputBytes: outBytes.byteLength,
-          engineUsed: 'pdf-lib Page Organizer (Local Browser)',
+          engineUsed: 'Browser Processing',
           summaryMessage: `Saved PDF with ${pageInstructions.length} organized page(s).`,
         });
         return;
@@ -681,14 +730,28 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
       // 8. Crop PDF
       if (tool.slug === 'crop-pdf') {
         if (!pdfBytes) throw new Error('Please upload or load a PDF file first.');
-        const outBytes = await cropPdfPages(pdfBytes, cropMargins);
+        const targetRange =
+          cropScopeMode === 'all'
+            ? undefined
+            : cropScopeMode === 'current'
+            ? String(cropActivePage)
+            : cropCustomRange;
+        const outBytes = await cropPdfPages(pdfBytes, cropMargins, targetRange);
+        const outName = `${baseName}-cropped.pdf`;
+        storeCurrentDocument({ name: outName, bytes: outBytes }, 'tool:crop-pdf').catch(() => {});
         setResultDownload({
           url: URL.createObjectURL(toPdfBlob(outBytes)),
-          fileName: `${baseName}-cropped.pdf`,
+          fileName: outName,
           originalBytes: pdfBytes.byteLength,
           outputBytes: outBytes.byteLength,
-          engineUsed: 'pdf-lib CropBox/MediaBox Engine',
-          summaryMessage: `Applied margins (${cropMargins.top}pt top, ${cropMargins.right}pt right, ${cropMargins.bottom}pt bottom, ${cropMargins.left}pt left).`,
+          engineUsed: 'Browser Processing',
+          summaryMessage: `Applied crop (${cropMargins.top}pt top, ${cropMargins.right}pt right, ${cropMargins.bottom}pt bottom, ${cropMargins.left}pt left) to ${
+            cropScopeMode === 'all'
+              ? 'all pages'
+              : cropScopeMode === 'current'
+              ? `page ${cropActivePage}`
+              : `pages ${cropCustomRange}`
+          }.`,
         });
         return;
       }
@@ -702,7 +765,7 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           fileName: `${baseName}-numbered.pdf`,
           originalBytes: pdfBytes.byteLength,
           outputBytes: outBytes.byteLength,
-          engineUsed: 'pdf-lib Vector Typesetter',
+          engineUsed: 'Browser Processing',
           summaryMessage: `Added page numbering and headers/footers across document.`,
         });
         return;
@@ -716,12 +779,14 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           formValues,
           flattenAfterFill
         );
+        const outName = `${baseName}-filled.pdf`;
+        storeCurrentDocument({ name: outName, bytes: outBytes }, 'tool:fill-pdf-forms').catch(() => {});
         setResultDownload({
           url: URL.createObjectURL(toPdfBlob(outBytes)),
-          fileName: `${baseName}-filled-form.pdf`,
+          fileName: outName,
           originalBytes: pdfBytes.byteLength,
           outputBytes: outBytes.byteLength,
-          engineUsed: 'pdf-lib AcroForm Engine',
+          engineUsed: 'Browser Processing',
           summaryMessage: `Saved ${Object.keys(formValues).length} form field value(s)${
             flattenAfterFill ? ' and flattened fields into static content' : ''
           }.`,
@@ -1026,14 +1091,11 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
 
   return (
     <div className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-xl overflow-hidden shadow-xs">
-      {/* Top Engine & Privacy Transparency Bar */}
-      <div className="px-5 py-3 bg-[#FAFAFA] dark:bg-[#27272A] border-b border-[#E4E4E7] dark:border-[#3F3F46] flex flex-wrap items-center justify-between gap-2 text-xs text-[#52525B] dark:text-[#D4D4D8]">
+      {/* Concise Privacy Bar */}
+      <div className="px-5 py-2.5 bg-[#FAFAFA] dark:bg-[#27272A] border-b border-[#E4E4E7] dark:border-[#3F3F46] flex flex-wrap items-center justify-between gap-2 text-xs text-[#52525B] dark:text-[#D4D4D8]">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-[#B91C1C] dark:text-[#EF4444] shrink-0" />
           <span>{tool.privacyDisclosure}</span>
-        </div>
-        <div className="font-mono text-[#52525B] dark:text-[#D4D4D8]">
-          Mode: <strong className="text-[#18181B] dark:text-[#FAFAFA]">{tool.engineLabel}</strong>
         </div>
       </div>
 
@@ -1372,6 +1434,79 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           </div>
         )}
 
+        {/* Empty State Dropzone when no single PDF is loaded yet */}
+        {!pdfBytes && tool.acceptedInputs === 'pdf' && (
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
+            onDrop={async (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const droppedFile = e.dataTransfer.files?.[0];
+              if (!droppedFile) return;
+              clearResult();
+              try {
+                const bytes = new Uint8Array(await droppedFile.arrayBuffer());
+                if (tool.slug !== 'repair-pdf') {
+                  const v = validateFileHeader(bytes, 'pdf');
+                  if (!v.valid) throw new Error(v.error);
+                }
+                setPdfBytes(bytes);
+                setFileName(droppedFile.name);
+                storeCurrentDocument(
+                  { name: droppedFile.name, bytes },
+                  `tool:${tool.slug}`
+                ).catch(() => {});
+              } catch (err) {
+                setErrorMessage(
+                  err instanceof Error ? err.message : 'File validation failed.'
+                );
+              }
+            }}
+            className="p-10 border-2 border-dashed border-[#D4D4D8] dark:border-[#3F3F46] hover:border-[#B91C1C] dark:hover:border-[#EF4444] bg-[#FAFAFA]/60 dark:bg-[#09090B]/50 rounded-xl text-center space-y-4 transition-colors"
+          >
+            <div className="w-12 h-12 rounded-xl bg-[#FEF2F2] dark:bg-[#B91C1C]/15 border border-[#B91C1C]/20 text-[#B91C1C] dark:text-[#EF4444] flex items-center justify-center mx-auto">
+              <Upload className="w-6 h-6" />
+            </div>
+            <div className="space-y-1 max-w-md mx-auto">
+              <h3 className="text-sm font-bold text-[#18181B] dark:text-[#FAFAFA]">
+                Drop your PDF file here to start {tool.shortTitle}
+              </h3>
+              <p className="text-xs text-[#52525B] dark:text-[#D4D4D8]">
+                Choose a PDF from your device or load our sample document to open the interactive workspace immediately.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
+              <label
+                htmlFor={`upload-input-${tool.slug}`}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-[#B91C1C] hover:bg-[#7F1D1D] rounded-lg cursor-pointer transition-colors shadow-xs"
+              >
+                <Upload className="w-4 h-4" />
+                <span>Choose PDF File</span>
+              </label>
+              <button
+                type="button"
+                onClick={handleLoadSample}
+                disabled={isProcessing}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 text-xs font-semibold text-[#18181B] dark:text-[#FAFAFA] bg-white dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] hover:border-[#B91C1C] rounded-lg transition-colors"
+              >
+                <Sparkles className="w-4 h-4 text-[#B91C1C]" />
+                <span>Load Sample PDF</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Loading indicator while inspecting uploaded PDF */}
+        {pdfBytes && !inspection && isInspectingPdf && tool.acceptedInputs === 'pdf' && (
+          <div className="p-10 bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-xl flex flex-col items-center justify-center gap-2 text-xs font-semibold text-[#18181B] dark:text-[#FAFAFA]">
+            <RefreshCw className="w-5 h-5 animate-spin text-[#B91C1C]" />
+            <span>Loading PDF workspace...</span>
+          </div>
+        )}
+
         {/* Single-PDF Loaded Inspector & Tool-Specific Configuration */}
         {pdfBytes && inspection && tool.acceptedInputs === 'pdf' && (
           <div className="space-y-5">
@@ -1454,7 +1589,7 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
                   htmlFor="compress-preset-select"
                   className="block text-xs font-semibold text-[#18181B] dark:text-[#FAFAFA]"
                 >
-                  Ghostscript Compression Profile
+                  Compression Profile
                 </label>
                 <select
                   id="compress-preset-select"
@@ -1483,193 +1618,56 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
               tool.slug === 'delete-pdf-pages' ||
               tool.slug === 'reorder-pdf-pages' ||
               tool.slug === 'organize-pdf') && (
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#52525B] dark:text-[#D4D4D8]">
-                    Interactive Page Sequence ({pageInstructions.length} Pages)
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setPageInstructions((prev) =>
-                          prev.map((p) => ({
-                            ...p,
-                            extraRotation: ((p.extraRotation || 0) + 90) % 360,
-                          }))
-                        )
-                      }
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#FAFAFA] dark:bg-[#27272A] hover:bg-[#E4E4E7] dark:hover:bg-[#09090B] border border-[#E4E4E7] dark:border-[#3F3F46] text-[#18181B] dark:text-[#FAFAFA] rounded-lg"
-                    >
-                      <RotateCw className="w-3.5 h-3.5" />
-                      Rotate All +90°
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setPageInstructions((prev) => [
-                          ...prev,
-                          {
-                            type: 'blank',
-                            widthPt: 612,
-                            heightPt: 792,
-                            label: 'Blank Page',
-                          },
-                        ])
-                      }
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-[#FAFAFA] dark:bg-[#27272A] hover:bg-[#E4E4E7] dark:hover:bg-[#09090B] border border-[#E4E4E7] dark:border-[#3F3F46] text-[#18181B] dark:text-[#FAFAFA] rounded-lg"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      Append Blank Page
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  {pageInstructions.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="p-2.5 bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-lg flex flex-col justify-between space-y-2"
-                    >
-                      <div className="aspect-[1/1.28] bg-white border border-[#E4E4E7] dark:border-[#3F3F46] rounded flex items-center justify-center overflow-hidden">
-                        {item.thumbUrl ? (
-                          <img
-                            src={item.thumbUrl}
-                            alt={item.label}
-                            referrerPolicy="no-referrer"
-                            style={{
-                              transform: `rotate(${item.extraRotation || 0}deg)`,
-                            }}
-                            className="w-full h-full object-contain transition-transform"
-                          />
-                        ) : (
-                          <span className="text-xs text-[#52525B] font-medium">
-                            Blank Sheet
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between text-xs font-semibold text-[#18181B] dark:text-[#FAFAFA]">
-                        <span>
-                          #{idx + 1} ({item.label})
-                        </span>
-                        {item.extraRotation ? (
-                          <span className="text-[#B91C1C] dark:text-[#EF4444] font-mono">
-                            +{item.extraRotation}°
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="flex items-center justify-between gap-1 pt-1 border-t border-[#E4E4E7] dark:border-[#3F3F46]">
-                        <button
-                          type="button"
-                          disabled={idx === 0}
-                          onClick={() => {
-                            const copy = [...pageInstructions];
-                            const tmp = copy[idx - 1];
-                            copy[idx - 1] = copy[idx];
-                            copy[idx] = tmp;
-                            setPageInstructions(copy);
-                          }}
-                          title="Move Left"
-                          aria-label={`Move page ${idx + 1} left`}
-                          className="p-1 bg-white dark:bg-[#18181B] text-[#18181B] dark:text-[#FAFAFA] border border-[#E4E4E7] dark:border-[#3F3F46] rounded hover:bg-[#FAFAFA] dark:hover:bg-[#09090B] disabled:opacity-40"
-                        >
-                          <ArrowLeft className="w-3 h-3" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const copy = [...pageInstructions];
-                            copy[idx] = {
-                              ...copy[idx],
-                              extraRotation:
-                                ((copy[idx].extraRotation || 0) + 90) % 360,
-                            };
-                            setPageInstructions(copy);
-                          }}
-                          title="Rotate +90°"
-                          aria-label={`Rotate page ${idx + 1}`}
-                          className="p-1 bg-white dark:bg-[#18181B] text-[#18181B] dark:text-[#FAFAFA] border border-[#E4E4E7] dark:border-[#3F3F46] rounded hover:bg-[#FAFAFA] dark:hover:bg-[#09090B]"
-                        >
-                          <RotateCw className="w-3 h-3" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const copy = [...pageInstructions];
-                            copy.splice(idx + 1, 0, { ...item });
-                            setPageInstructions(copy);
-                          }}
-                          title="Duplicate Page"
-                          aria-label={`Duplicate page ${idx + 1}`}
-                          className="p-1 bg-white dark:bg-[#18181B] text-[#18181B] dark:text-[#FAFAFA] border border-[#E4E4E7] dark:border-[#3F3F46] rounded hover:bg-[#FAFAFA] dark:hover:bg-[#09090B]"
-                        >
-                          <Copy className="w-3 h-3" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={pageInstructions.length <= 1}
-                          onClick={() => {
-                            setPageInstructions(
-                              pageInstructions.filter((_, i) => i !== idx)
-                            );
-                          }}
-                          title="Delete Page"
-                          aria-label={`Delete page ${idx + 1}`}
-                          className="p-1 bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] text-[#D64545] rounded hover:bg-[#D64545]/10 disabled:opacity-40"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={idx === pageInstructions.length - 1}
-                          onClick={() => {
-                            const copy = [...pageInstructions];
-                            const tmp = copy[idx + 1];
-                            copy[idx + 1] = copy[idx];
-                            copy[idx] = tmp;
-                            setPageInstructions(copy);
-                          }}
-                          title="Move Right"
-                          aria-label={`Move page ${idx + 1} right`}
-                          className="p-1 bg-white dark:bg-[#18181B] text-[#18181B] dark:text-[#FAFAFA] border border-[#E4E4E7] dark:border-[#3F3F46] rounded hover:bg-[#FAFAFA] dark:hover:bg-[#09090B] disabled:opacity-40"
-                        >
-                          <ArrowRight className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <PageOrganizerWorkspace
+                pages={pageInstructions}
+                onChangePages={setPageInstructions}
+                isRenderingThumbs={isRenderingThumbs}
+                defaultPageWidthPt={inspection.pages[0]?.widthPt || 612}
+                defaultPageHeightPt={inspection.pages[0]?.heightPt || 792}
+                onResetOriginal={() => {
+                  const pageList =
+                    thumbnails.length > 0 ? thumbnails : inspection.pages;
+                  setPageInstructions(
+                    pageList.map((t, idx) => ({
+                      id: `page-${idx + 1}`,
+                      type: 'existing',
+                      originalPageIndex: idx,
+                      extraRotation: 0,
+                      thumbUrl:
+                        'dataUrl' in t && t.dataUrl ? t.dataUrl : undefined,
+                      label: `Page ${t.pageNumber}`,
+                    }))
+                  );
+                }}
+                onReplaceDocument={() => {
+                  const inputEl = document.getElementById(
+                    `upload-input-${tool.slug}`
+                  );
+                  inputEl?.click();
+                }}
+                onCloseDocument={() => {
+                  clearResult();
+                  setPdfBytes(null);
+                  setFileName('');
+                  clearCurrentDocument().catch(() => {});
+                }}
+              />
             )}
 
-            {/* Crop PDF Controls */}
+            {/* Visual & Margin Crop PDF Workspace */}
             {tool.slug === 'crop-pdf' && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-lg">
-                {(['top', 'right', 'bottom', 'left'] as const).map((side) => (
-                  <div key={side}>
-                    <label
-                      htmlFor={`crop-${side}`}
-                      className="block text-xs font-semibold text-[#18181B] dark:text-[#FAFAFA] capitalize mb-1"
-                    >
-                      {side} Margin (pt)
-                    </label>
-                    <input
-                      id={`crop-${side}`}
-                      type="number"
-                      min={0}
-                      max={200}
-                      value={cropMargins[side]}
-                      onChange={(e) =>
-                        setCropMargins((prev) => ({
-                          ...prev,
-                          [side]: Number(e.target.value),
-                        }))
-                      }
-                      className="w-full px-3 py-1.5 text-xs bg-white dark:bg-[#18181B] text-[#18181B] dark:text-[#FAFAFA] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-lg tabular-nums"
-                    />
-                  </div>
-                ))}
-              </div>
+              <VisualCropWorkspace
+                pdfBytes={pdfBytes}
+                inspection={inspection}
+                cropMargins={cropMargins}
+                onChangeMargins={setCropMargins}
+                scopeMode={cropScopeMode}
+                onChangeScopeMode={setCropScopeMode}
+                activePage={cropActivePage}
+                onChangeActivePage={setCropActivePage}
+                customRange={cropCustomRange}
+                onChangeCustomRange={setCropCustomRange}
+              />
             )}
 
             {/* Page Numbers, Headers & Footers Controls */}
@@ -1767,78 +1765,24 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
               </div>
             )}
 
-            {/* Fill Interactive PDF Forms Inspector */}
+            {/* Fill Interactive PDF Forms Workspace */}
             {tool.slug === 'fill-pdf-forms' && (
-              <div className="p-4 bg-[#FAFAFA] dark:bg-[#27272A] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-lg space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-[#18181B] dark:text-[#FAFAFA]">
-                    Detected Interactive AcroForm Fields ({inspection.formFields.length})
-                  </h3>
-                  <label className="flex items-center gap-1.5 text-xs text-[#18181B] dark:text-[#FAFAFA] cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={flattenAfterFill}
-                      onChange={(e) => setFlattenAfterFill(e.target.checked)}
-                      className="accent-[#B91C1C]"
-                    />
-                    <span>Flatten fields after saving</span>
-                  </label>
-                </div>
-                {inspection.formFields.length === 0 ? (
-                  <p className="text-xs text-[#52525B] dark:text-[#D4D4D8]">
-                    This PDF does not contain interactive AcroForm fields. Click
-                    &ldquo;Load Sample PDF&rdquo; above to test a PDF with 3
-                    interactive form fields, or open the Interactive PDF Editor to
-                    place text overlays.
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {inspection.formFields.map((field) => (
-                      <div
-                        key={field.name}
-                        className="p-3 bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-lg space-y-1.5"
-                      >
-                        <label
-                          htmlFor={`acro-${field.name}`}
-                          className="block text-xs font-mono font-semibold text-[#18181B] dark:text-[#FAFAFA]"
-                        >
-                          {field.name}{' '}
-                          <span className="text-[#52525B] dark:text-[#D4D4D8] font-normal">
-                            ({field.type})
-                          </span>
-                        </label>
-                        {field.type === 'checkbox' ? (
-                          <input
-                            id={`acro-${field.name}`}
-                            type="checkbox"
-                            checked={Boolean(formValues[field.name])}
-                            onChange={(e) =>
-                              setFormValues((prev) => ({
-                                ...prev,
-                                [field.name]: e.target.checked,
-                              }))
-                            }
-                            className="w-4 h-4 accent-[#B91C1C]"
-                          />
-                        ) : (
-                          <input
-                            id={`acro-${field.name}`}
-                            type="text"
-                            value={String(formValues[field.name] ?? '')}
-                            onChange={(e) =>
-                              setFormValues((prev) => ({
-                                ...prev,
-                                [field.name]: e.target.value,
-                              }))
-                            }
-                            className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-[#27272A] text-[#18181B] dark:text-[#FAFAFA] border border-[#E4E4E7] dark:border-[#3F3F46] rounded"
-                          />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <FillFormsWorkspace
+                pdfBytes={pdfBytes}
+                inspection={inspection}
+                formValues={formValues}
+                onChangeFormValues={setFormValues}
+                flattenAfterFill={flattenAfterFill}
+                onChangeFlattenAfterFill={setFlattenAfterFill}
+                isInspecting={isInspectingPdf}
+                onLoadSampleForm={handleLoadSample}
+                onUploadAnother={() => {
+                  const inputEl = document.getElementById(
+                    `upload-input-${tool.slug}`
+                  );
+                  inputEl?.click();
+                }}
+              />
             )}
 
             {/* PDF to Images Options */}
@@ -2417,7 +2361,11 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
           <button
             type="button"
             onClick={handleExecuteTool}
-            disabled={isProcessing}
+            disabled={
+              isProcessing ||
+              (tool.slug === 'fill-pdf-forms' &&
+                Boolean(inspection && inspection.formFields.length === 0))
+            }
             className="inline-flex items-center gap-2 px-6 py-3 text-sm font-semibold text-white bg-[#B91C1C] hover:bg-[#7F1D1D] disabled:opacity-50 rounded-lg transition-colors cursor-pointer shadow-xs"
           >
             {isProcessing ? (
@@ -2428,7 +2376,16 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
             ) : (
               <>
                 <Sparkles className="w-4 h-4" />
-                Run {tool.shortTitle} Now
+                {tool.slug === 'crop-pdf'
+                  ? 'Apply Crop & Export PDF'
+                  : tool.slug === 'organize-pdf' ||
+                    tool.slug === 'rotate-pdf' ||
+                    tool.slug === 'delete-pdf-pages' ||
+                    tool.slug === 'reorder-pdf-pages'
+                  ? 'Apply Changes & Export PDF'
+                  : tool.slug === 'fill-pdf-forms'
+                  ? 'Save Filled Form PDF'
+                  : `Run ${tool.shortTitle} Now`}
               </>
             )}
           </button>
@@ -2441,11 +2398,14 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
                   <span>{resultDownload.summaryMessage}</span>
                 </div>
                 <div className="text-[#52525B] dark:text-[#D4D4D8] font-mono tabular-nums">
+                  File: <strong className="text-[#18181B] dark:text-[#FAFAFA]">{resultDownload.fileName}</strong>
+                  {' · '}
                   {resultDownload.originalBytes
-                    ? `Input: ${formatFileSize(resultDownload.originalBytes)} → `
+                    ? `${formatFileSize(resultDownload.originalBytes)} → `
                     : ''}
-                  Output: <strong className="text-[#18181B] dark:text-[#FAFAFA]">{formatFileSize(resultDownload.outputBytes)}</strong>{' '}
-                  · Mode: {resultDownload.engineUsed}
+                  <strong className="text-[#18181B] dark:text-[#FAFAFA]">
+                    {formatFileSize(resultDownload.outputBytes)}
+                  </strong>
                 </div>
               </div>
               <a
@@ -2454,7 +2414,22 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#16865B] hover:bg-[#126E4A] rounded-lg shadow-xs transition-colors whitespace-nowrap shrink-0"
               >
                 <Download className="w-4 h-4" />
-                Download {resultDownload.fileName}
+                <span>
+                  {tool.slug === 'crop-pdf'
+                    ? 'Download Cropped PDF'
+                    : tool.slug === 'fill-pdf-forms'
+                    ? 'Download Filled PDF'
+                    : tool.slug === 'organize-pdf' ||
+                      tool.slug === 'rotate-pdf' ||
+                      tool.slug === 'delete-pdf-pages' ||
+                      tool.slug === 'reorder-pdf-pages'
+                    ? 'Download Organized PDF'
+                    : tool.slug === 'merge-pdf'
+                    ? 'Download Merged PDF'
+                    : resultDownload.fileName.endsWith('.zip')
+                    ? 'Download ZIP Archive'
+                    : 'Download Output File'}
+                </span>
               </a>
             </div>
           )}

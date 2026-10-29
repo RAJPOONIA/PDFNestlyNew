@@ -13,11 +13,14 @@ export function Navbar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const navLinks = [
-    { href: '/tools', label: 'All Tools', match: '/tools' },
+    { href: '/tools', label: 'All PDF Tools', match: '/tools' },
+    { href: '/edit-pdf', label: 'Edit PDF', match: '/edit-pdf' },
+    { href: '/crop-pdf', label: 'Crop PDF', match: '/crop-pdf' },
+    { href: '/organize-pdf', label: 'Organize PDF', match: '/organize-pdf' },
+    { href: '/fill-pdf-forms', label: 'Fill Forms', match: '/fill-pdf-forms' },
     { href: '/merge-pdf', label: 'Merge & Split', match: '/merge-pdf' },
     { href: '/compress-pdf', label: 'Compress', match: '/compress-pdf' },
-    { href: '/privacy', label: 'Privacy & Security', match: '/privacy' },
-    { href: '/help', label: 'Help & Docs', match: '/help' },
+    { href: '/help', label: 'Help', match: '/help' },
   ];
 
   return (

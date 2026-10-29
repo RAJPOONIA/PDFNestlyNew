@@ -4,6 +4,7 @@ import './globals.css';
 import { Navbar } from '@/components/Navbar';
 import { Footer } from '@/components/Footer';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { GoogleAnalytics } from '@/components/GoogleAnalytics';
 
 const plusJakarta = Plus_Jakarta_Sans({
   subsets: ['latin'],
@@ -75,6 +76,7 @@ export default function RootLayout({
         suppressHydrationWarning
         className="min-h-screen flex flex-col bg-[#FAFAFA] dark:bg-[#09090B] text-[#18181B] dark:text-[#FAFAFA] font-sans antialiased selection:bg-[#B91C1C] selection:text-white transition-colors duration-200"
       >
+        <GoogleAnalytics />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}

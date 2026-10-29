@@ -743,13 +743,28 @@ export async function cropPdfPages(
     ? parsePageRanges(pageRangeStr, total)
     : Array.from({ length: total }, (_, i) => i);
 
+  if (targetIndices.length === 0) {
+    throw new Error('No valid pages matched the selected page range.');
+  }
+
   for (const idx of targetIndices) {
     const page = pdfDoc.getPage(idx);
     const box = page.getCropBox();
-    const newX = box.x + Math.max(0, marginsPt.left);
-    const newY = box.y + Math.max(0, marginsPt.bottom);
-    const newW = Math.max(36, box.width - marginsPt.left - marginsPt.right);
-    const newH = Math.max(36, box.height - marginsPt.top - marginsPt.bottom);
+    const top = Math.max(0, Number(marginsPt.top) || 0);
+    const right = Math.max(0, Number(marginsPt.right) || 0);
+    const bottom = Math.max(0, Number(marginsPt.bottom) || 0);
+    const left = Math.max(0, Number(marginsPt.left) || 0);
+
+    if (left + right >= box.width - 18 || top + bottom >= box.height - 18) {
+      throw new Error(
+        `Crop margins on page ${idx + 1} exceed the available page dimensions (${Math.round(box.width)} × ${Math.round(box.height)} pt).`
+      );
+    }
+
+    const newX = box.x + left;
+    const newY = box.y + bottom;
+    const newW = Math.max(18, box.width - left - right);
+    const newH = Math.max(18, box.height - top - bottom);
     page.setCropBox(newX, newY, newW, newH);
     page.setMediaBox(newX, newY, newW, newH);
   }
