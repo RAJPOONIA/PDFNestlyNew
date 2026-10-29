@@ -54,6 +54,7 @@ import { formatFileSize, validateFileHeader, toPdfBlob } from '@/lib/pdf-utils';
 import { loadCurrentDocument, storeCurrentDocument, clearCurrentDocument } from '@/lib/document-store';
 import { SignatureBuilder } from './SignatureBuilder';
 import { PdfNestlyMark } from './Logo';
+import { trackPdfActivity, createClientJobId } from '@/lib/activity-client';
 
 export type EditorToolMode =
   | 'select'
@@ -165,6 +166,16 @@ export function PdfEditorWorkspace({
 
   // 1. Initial Load: Auto-restore from IndexedDB if not passed via props
   useEffect(() => {
+    const editorSlug = defaultTool === 'signature' ? 'sign-pdf' : 'edit-pdf';
+    const editorTitle = defaultTool === 'signature' ? 'Sign PDF' : 'Edit PDF';
+    trackPdfActivity({
+      eventType: 'tool_opened',
+      toolSlug: editorSlug,
+      toolName: editorTitle,
+      status: 'info',
+      dedupeKey: `tool_open_${editorSlug}`,
+    }).catch(() => {});
+
     let mounted = true;
     if (!pdfBytes) {
       setIsLoading(true);
@@ -832,6 +843,20 @@ export function PdfEditorWorkspace({
     setErrorMessage('');
     setStatusMessage('Compiling vector layers and generating PDF...');
 
+    const editorSlug = defaultTool === 'signature' ? 'sign-pdf' : 'edit-pdf';
+    const editorTitle = defaultTool === 'signature' ? 'Sign PDF' : 'Edit PDF';
+    const jobId = createClientJobId(editorSlug);
+    const startTime = performance.now();
+
+    trackPdfActivity({
+      eventType: 'pdf_processing_started',
+      toolSlug: editorSlug,
+      toolName: editorTitle,
+      status: 'started',
+      fileSizeBytes: pdfBytes.byteLength,
+      jobId,
+    }).catch(() => {});
+
     try {
       const modifiedBytes = await applyEditorAnnotationsToPdf(pdfBytes, annotations, {
         extraRotations,
@@ -851,6 +876,18 @@ export function PdfEditorWorkspace({
         byteLength: modifiedBytes.byteLength,
       });
 
+      const durationMs = Math.round(performance.now() - startTime);
+      trackPdfActivity({
+        eventType: 'pdf_processing_completed',
+        toolSlug: editorSlug,
+        toolName: editorTitle,
+        status: 'succeeded',
+        fileSizeBytes: pdfBytes.byteLength,
+        outputSizeBytes: modifiedBytes.byteLength,
+        durationMs,
+        jobId,
+      }).catch(() => {});
+
       // Trigger immediate browser download
       const a = document.createElement('a');
       a.href = url;
@@ -859,10 +896,31 @@ export function PdfEditorWorkspace({
       a.click();
       a.remove();
 
+      trackPdfActivity({
+        eventType: 'pdf_download_completed',
+        toolSlug: editorSlug,
+        toolName: editorTitle,
+        status: 'succeeded',
+        fileSizeBytes: modifiedBytes.byteLength,
+        outputSizeBytes: modifiedBytes.byteLength,
+        jobId,
+      }).catch(() => {});
+
       setExportedIdx(historyIdx);
       setStatusMessage(`Downloaded "${outName}" (${formatFileSize(modifiedBytes.byteLength)}).`);
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to export edited PDF.');
+      const errMsg = err instanceof Error ? err.message : 'Failed to export edited PDF.';
+      setErrorMessage(errMsg);
+      trackPdfActivity({
+        eventType: 'pdf_processing_failed',
+        toolSlug: editorSlug,
+        toolName: editorTitle,
+        status: 'failed',
+        fileSizeBytes: pdfBytes.byteLength,
+        durationMs: Math.round(performance.now() - startTime),
+        errorCategory: errMsg,
+        jobId,
+      }).catch(() => {});
     } finally {
       setIsExporting(false);
     }

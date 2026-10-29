@@ -4,6 +4,7 @@ import './globals.css';
 import { Navbar } from '@/components/Navbar';
 import { Footer } from '@/components/Footer';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { AuthProvider } from '@/components/AuthProvider';
 import { GoogleAnalytics } from '@/components/GoogleAnalytics';
 
 const plusJakarta = Plus_Jakarta_Sans({
@@ -82,9 +83,11 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
         <ThemeProvider>
-          <Navbar />
-          <main className="flex-1">{children}</main>
-          <Footer />
+          <AuthProvider>
+            <Navbar />
+            <main className="flex-1">{children}</main>
+            <Footer />
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

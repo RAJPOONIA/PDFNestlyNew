@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Upload,
   Download,
@@ -70,6 +70,10 @@ import {
   storeCurrentDocument,
   clearCurrentDocument,
 } from '@/lib/document-store';
+import {
+  trackPdfActivity,
+  createClientJobId,
+} from '@/lib/activity-client';
 
 interface PdfToolRunnerProps {
   tool: PdfToolDefinition;
@@ -103,6 +107,21 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
   const [thumbnails, setThumbnails] = useState<PageThumbnailInfo[]>([]);
   const [isInspectingPdf, setIsInspectingPdf] = useState<boolean>(false);
   const [isRenderingThumbs, setIsRenderingThumbs] = useState<boolean>(false);
+  const activeJobRef = useRef<{
+    jobId: string;
+    startTime: number;
+    inputBytes: number;
+  } | null>(null);
+
+  useEffect(() => {
+    trackPdfActivity({
+      eventType: 'tool_opened',
+      toolSlug: tool.slug,
+      toolName: tool.shortTitle,
+      status: 'info',
+      dedupeKey: `tool_open_${tool.slug}`,
+    }).catch(() => {});
+  }, [tool.slug, tool.shortTitle]);
 
   // Auto-load active document from shared document store if present and no file loaded yet
   useEffect(() => {
@@ -511,6 +530,15 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
     if (files.length === 0) return;
     clearResult();
 
+    const uploadTotalBytes = files.reduce((acc, f) => acc + f.size, 0);
+    trackPdfActivity({
+      eventType: 'pdf_upload_started',
+      toolSlug: tool.slug,
+      toolName: tool.shortTitle,
+      status: 'started',
+      fileSizeBytes: uploadTotalBytes,
+    }).catch(() => {});
+
     try {
       if (tool.acceptedInputs === 'multi-pdf') {
         const added: UploadedPdfItem[] = [];
@@ -570,6 +598,26 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
   const handleExecuteTool = async () => {
     clearResult();
     setIsProcessing(true);
+
+    const jobId = createClientJobId(tool.slug);
+    const startTime = performance.now();
+    const inputBytes =
+      pdfBytes?.byteLength ||
+      multiPdfs.reduce((acc, m) => acc + m.bytes.byteLength, 0) ||
+      imageFiles.reduce((acc, f) => acc + f.size, 0) ||
+      officeFile?.size ||
+      0;
+
+    activeJobRef.current = { jobId, startTime, inputBytes };
+
+    trackPdfActivity({
+      eventType: 'pdf_processing_started',
+      toolSlug: tool.slug,
+      toolName: tool.shortTitle,
+      status: 'started',
+      fileSizeBytes: inputBytes,
+      jobId,
+    }).catch(() => {});
 
     try {
       const rawName = (
@@ -1081,13 +1129,46 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
         return;
       }
     } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : 'Operation failed unexpectedly.'
-      );
+      const errMsg =
+        err instanceof Error ? err.message : 'Operation failed unexpectedly.';
+      setErrorMessage(errMsg);
+      const durationMs = activeJobRef.current
+        ? Math.round(performance.now() - activeJobRef.current.startTime)
+        : 0;
+      trackPdfActivity({
+        eventType: 'pdf_processing_failed',
+        toolSlug: tool.slug,
+        toolName: tool.shortTitle,
+        status: 'failed',
+        fileSizeBytes: activeJobRef.current?.inputBytes || 0,
+        durationMs,
+        errorCategory: errMsg,
+        jobId: activeJobRef.current?.jobId,
+      }).catch(() => {});
     } finally {
       setIsProcessing(false);
     }
   };
+
+  useEffect(() => {
+    if (!resultDownload) return;
+    const durationMs = activeJobRef.current
+      ? Math.round(performance.now() - activeJobRef.current.startTime)
+      : 0;
+    trackPdfActivity({
+      eventType: 'pdf_processing_completed',
+      toolSlug: tool.slug,
+      toolName: tool.shortTitle,
+      status: 'succeeded',
+      fileSizeBytes:
+        resultDownload.originalBytes ||
+        activeJobRef.current?.inputBytes ||
+        0,
+      outputSizeBytes: resultDownload.outputBytes,
+      durationMs,
+      jobId: activeJobRef.current?.jobId,
+    }).catch(() => {});
+  }, [resultDownload, tool.slug, tool.shortTitle]);
 
   return (
     <div className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-xl overflow-hidden shadow-xs">
@@ -2411,6 +2492,17 @@ function StandardToolWorkspace({ tool }: { tool: PdfToolDefinition }) {
               <a
                 href={resultDownload.url}
                 download={resultDownload.fileName}
+                onClick={() => {
+                  trackPdfActivity({
+                    eventType: 'pdf_download_completed',
+                    toolSlug: tool.slug,
+                    toolName: tool.shortTitle,
+                    status: 'succeeded',
+                    fileSizeBytes: resultDownload.outputBytes,
+                    outputSizeBytes: resultDownload.outputBytes,
+                    jobId: activeJobRef.current?.jobId,
+                  }).catch(() => {});
+                }}
                 className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#16865B] hover:bg-[#126E4A] rounded-lg shadow-xs transition-colors whitespace-nowrap shrink-0"
               >
                 <Download className="w-4 h-4" />

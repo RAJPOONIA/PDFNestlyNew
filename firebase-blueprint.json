@@ -1,0 +1,420 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public and account profile metadata for a registered PDFNestly user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Unique user identifier matching auth UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified user email address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User full name or display name.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Optional profile avatar URL.",
+          "maxLength": 500
+        },
+        "provider": {
+          "type": "string",
+          "description": "Authentication provider used for registration.",
+          "enum": ["google", "email"],
+          "maxLength": 32
+        },
+        "role": {
+          "type": "string",
+          "description": "Role-based access control level.",
+          "enum": ["user", "admin"],
+          "maxLength": 16
+        },
+        "status": {
+          "type": "string",
+          "description": "Account lifecycle status.",
+          "enum": ["active", "suspended"],
+          "maxLength": 16
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether the user's email address is verified."
+        },
+        "pdfJobsCount": {
+          "type": "number",
+          "description": "Total PDF jobs processed by this user."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last updated."
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "displayName",
+        "provider",
+        "role",
+        "status",
+        "emailVerified",
+        "pdfJobsCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted administrator membership document keyed by admin UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Administrator UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Administrator email address.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "grantedBy": {
+          "type": "string",
+          "description": "UID of the administrator or bootstrap process that granted admin access.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        }
+      },
+      "required": ["uid", "email", "grantedBy", "createdAt"]
+    },
+    "PdfJob": {
+      "title": "PdfJob",
+      "description": "Sanitized metadata record for a PDF tool processing job.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique job identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Owner user UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "toolSlug": {
+          "type": "string",
+          "description": "Slug of the PDF tool used.",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "toolName": {
+          "type": "string",
+          "description": "Display title of the PDF tool.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Processing status of the job.",
+          "enum": ["processing", "completed", "failed"],
+          "maxLength": 32
+        },
+        "fileSizeBytes": {
+          "type": "number",
+          "description": "Input file size in bytes."
+        },
+        "outputSizeBytes": {
+          "type": "number",
+          "description": "Output file size in bytes."
+        },
+        "durationMs": {
+          "type": "number",
+          "description": "Processing duration in milliseconds."
+        },
+        "errorCategory": {
+          "type": "string",
+          "description": "Sanitized error category if failed.",
+          "maxLength": 120
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the job was recorded."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "toolSlug",
+        "toolName",
+        "status",
+        "fileSizeBytes",
+        "outputSizeBytes",
+        "durationMs",
+        "createdAt"
+      ]
+    },
+    "ActivityEvent": {
+      "title": "ActivityEvent",
+      "description": "Sanitized user or system activity event for analytics and auditing.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique event identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "Authenticated user UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "eventType": {
+          "type": "string",
+          "description": "Standardized lifecycle or tool event type.",
+          "enum": [
+            "signup_completed",
+            "login_completed",
+            "logout_completed",
+            "page_viewed",
+            "tool_opened",
+            "pdf_upload_started",
+            "pdf_processing_started",
+            "pdf_processing_completed",
+            "pdf_processing_failed",
+            "pdf_download_completed"
+          ],
+          "maxLength": 64
+        },
+        "toolSlug": {
+          "type": "string",
+          "description": "Associated PDF tool slug.",
+          "maxLength": 64
+        },
+        "toolName": {
+          "type": "string",
+          "description": "Associated PDF tool display name.",
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Outcome status of the event.",
+          "enum": ["info", "started", "succeeded", "failed"],
+          "maxLength": 32
+        },
+        "durationMs": {
+          "type": "number",
+          "description": "Duration in milliseconds when applicable."
+        },
+        "fileSizeBytes": {
+          "type": "number",
+          "description": "File size in bytes when applicable."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the event was recorded."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "eventType",
+        "status",
+        "createdAt"
+      ]
+    },
+    "AdminAuditLog": {
+      "title": "AdminAuditLog",
+      "description": "Immutable audit record of a privileged administrator action.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique audit log identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "adminUid": {
+          "type": "string",
+          "description": "UID of the administrator performing the action.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "adminEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified email of the administrator.",
+          "minLength": 3,
+          "maxLength": 254
+        },
+        "action": {
+          "type": "string",
+          "description": "Action identifier (e.g., user.suspended, user.role_changed, settings.updated).",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "targetType": {
+          "type": "string",
+          "description": "Entity type targeted by the action.",
+          "enum": ["user", "session", "settings", "system"],
+          "maxLength": 32
+        },
+        "targetId": {
+          "type": "string",
+          "description": "ID of the target resource.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "summary": {
+          "type": "string",
+          "description": "Sanitized human-readable description of the change.",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the audit log was created."
+        }
+      },
+      "required": [
+        "id",
+        "adminUid",
+        "adminEmail",
+        "action",
+        "targetType",
+        "targetId",
+        "summary",
+        "createdAt"
+      ]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global platform configuration managed by administrators.",
+      "type": "object",
+      "properties": {
+        "registrationEnabled": {
+          "type": "boolean",
+          "description": "Whether new user registrations are enabled."
+        },
+        "googleAuthEnabled": {
+          "type": "boolean",
+          "description": "Whether Google OAuth sign-in is enabled."
+        },
+        "emailAuthEnabled": {
+          "type": "boolean",
+          "description": "Whether Email/Password authentication is enabled."
+        },
+        "maintenanceMode": {
+          "type": "boolean",
+          "description": "Whether the platform maintenance banner/mode is active."
+        },
+        "maintenanceMessage": {
+          "type": "string",
+          "description": "Public message shown when maintenance mode is enabled.",
+          "maxLength": 300
+        },
+        "rateLimitPerMinute": {
+          "type": "number",
+          "description": "Maximum API requests per minute per client."
+        },
+        "maxUploadSizeMb": {
+          "type": "number",
+          "description": "Maximum allowed PDF upload size in megabytes."
+        },
+        "activityRetentionDays": {
+          "type": "number",
+          "description": "Number of days to retain activity and job logs."
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "UID of the administrator who last updated settings.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last settings update."
+        }
+      },
+      "required": [
+        "registrationEnabled",
+        "googleAuthEnabled",
+        "emailAuthEnabled",
+        "maintenanceMode",
+        "maintenanceMessage",
+        "rateLimitPerMinute",
+        "maxUploadSizeMb",
+        "activityRetentionDays",
+        "updatedBy",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User profile documents restricted to the owner and verified administrators."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Administrator registry keyed by user UID."
+    },
+    "/pdf_jobs/{jobId}": {
+      "schema": { "$ref": "#/entities/PdfJob" },
+      "description": "PDF tool execution job metadata owned by users and viewable by admins."
+    },
+    "/activity_events/{eventId}": {
+      "schema": { "$ref": "#/entities/ActivityEvent" },
+      "description": "Sanitized user activity and PDF lifecycle events."
+    },
+    "/admin_audit_logs/{logId}": {
+      "schema": { "$ref": "#/entities/AdminAuditLog" },
+      "description": "Immutable administrator audit trail."
+    },
+    "/system_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/SystemSettings" },
+      "description": "Global platform configuration documents."
+    }
+  }
+}

@@ -1,0 +1,402 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'rfjatt002@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Validation Blueprints (Pillar 2)
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+          'uid',
+          'email',
+          'displayName',
+          'provider',
+          'role',
+          'status',
+          'emailVerified',
+          'pdfJobsCount',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'uid',
+          'email',
+          'displayName',
+          'photoURL',
+          'provider',
+          'role',
+          'status',
+          'emailVerified',
+          'pdfJobsCount',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500)) &&
+        data.provider is string && data.provider.size() <= 32 && (data.provider == 'google' || data.provider == 'email') &&
+        data.role is string && data.role.size() <= 16 && (data.role == 'user' || data.role == 'admin') &&
+        data.status is string && data.status.size() <= 16 && (data.status == 'active' || data.status == 'suspended') &&
+        data.emailVerified is bool &&
+        data.pdfJobsCount is int && data.pdfJobsCount >= 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data) {
+      return data.keys().hasAll(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'grantedBy', 'createdAt']) &&
+        data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.grantedBy is string && data.grantedBy.size() >= 1 && data.grantedBy.size() <= 128 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidPdfJob(data) {
+      return data.keys().hasAll([
+          'id',
+          'userId',
+          'toolSlug',
+          'toolName',
+          'status',
+          'fileSizeBytes',
+          'outputSizeBytes',
+          'durationMs',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'userId',
+          'toolSlug',
+          'toolName',
+          'status',
+          'fileSizeBytes',
+          'outputSizeBytes',
+          'durationMs',
+          'errorCategory',
+          'createdAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.toolSlug is string && data.toolSlug.size() >= 1 && data.toolSlug.size() <= 64 && data.toolSlug.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.toolName is string && data.toolName.size() >= 1 && data.toolName.size() <= 120 &&
+        data.status is string && data.status.size() <= 32 && (data.status == 'processing' || data.status == 'completed' || data.status == 'failed') &&
+        data.fileSizeBytes is int && data.fileSizeBytes >= 0 &&
+        data.outputSizeBytes is int && data.outputSizeBytes >= 0 &&
+        data.durationMs is int && data.durationMs >= 0 &&
+        (!('errorCategory' in data) || (data.errorCategory is string && data.errorCategory.size() <= 120)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidActivityEvent(data) {
+      return data.keys().hasAll(['id', 'userId', 'eventType', 'status', 'createdAt']) &&
+        data.keys().hasOnly([
+          'id',
+          'userId',
+          'eventType',
+          'toolSlug',
+          'toolName',
+          'status',
+          'durationMs',
+          'fileSizeBytes',
+          'createdAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.eventType is string && data.eventType.size() <= 64 && (
+          data.eventType == 'signup_completed' ||
+          data.eventType == 'login_completed' ||
+          data.eventType == 'logout_completed' ||
+          data.eventType == 'page_viewed' ||
+          data.eventType == 'tool_opened' ||
+          data.eventType == 'pdf_upload_started' ||
+          data.eventType == 'pdf_processing_started' ||
+          data.eventType == 'pdf_processing_completed' ||
+          data.eventType == 'pdf_processing_failed' ||
+          data.eventType == 'pdf_download_completed'
+        ) &&
+        (!('toolSlug' in data) || (data.toolSlug is string && data.toolSlug.size() <= 64)) &&
+        (!('toolName' in data) || (data.toolName is string && data.toolName.size() <= 120)) &&
+        data.status is string && data.status.size() <= 32 && (
+          data.status == 'info' ||
+          data.status == 'started' ||
+          data.status == 'succeeded' ||
+          data.status == 'failed'
+        ) &&
+        (!('durationMs' in data) || (data.durationMs is int && data.durationMs >= 0)) &&
+        (!('fileSizeBytes' in data) || (data.fileSizeBytes is int && data.fileSizeBytes >= 0)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAdminAuditLog(data) {
+      return data.keys().hasAll([
+          'id',
+          'adminUid',
+          'adminEmail',
+          'action',
+          'targetType',
+          'targetId',
+          'summary',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'adminUid',
+          'adminEmail',
+          'action',
+          'targetType',
+          'targetId',
+          'summary',
+          'createdAt'
+        ]) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.adminUid is string && data.adminUid.size() >= 1 && data.adminUid.size() <= 128 && data.adminUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.adminEmail is string && data.adminEmail.size() >= 3 && data.adminEmail.size() <= 254 &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 64 &&
+        data.targetType is string && data.targetType.size() <= 32 && (
+          data.targetType == 'user' ||
+          data.targetType == 'session' ||
+          data.targetType == 'settings' ||
+          data.targetType == 'system'
+        ) &&
+        data.targetId is string && data.targetId.size() >= 1 && data.targetId.size() <= 128 &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 500 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidSystemSettings(data) {
+      return data.keys().hasAll([
+          'registrationEnabled',
+          'googleAuthEnabled',
+          'emailAuthEnabled',
+          'maintenanceMode',
+          'maintenanceMessage',
+          'rateLimitPerMinute',
+          'maxUploadSizeMb',
+          'activityRetentionDays',
+          'updatedBy',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'registrationEnabled',
+          'googleAuthEnabled',
+          'emailAuthEnabled',
+          'maintenanceMode',
+          'maintenanceMessage',
+          'rateLimitPerMinute',
+          'maxUploadSizeMb',
+          'activityRetentionDays',
+          'updatedBy',
+          'updatedAt'
+        ]) &&
+        data.registrationEnabled is bool &&
+        data.googleAuthEnabled is bool &&
+        data.emailAuthEnabled is bool &&
+        data.maintenanceMode is bool &&
+        data.maintenanceMessage is string && data.maintenanceMessage.size() <= 300 &&
+        data.rateLimitPerMinute is int && data.rateLimitPerMinute >= 5 && data.rateLimitPerMinute <= 10000 &&
+        data.maxUploadSizeMb is int && data.maxUploadSizeMb >= 1 && data.maxUploadSizeMb <= 500 &&
+        data.activityRetentionDays is int && data.activityRetentionDays >= 1 && data.activityRetentionDays <= 3650 &&
+        data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128 &&
+        data.updatedAt is timestamp;
+    }
+
+    // Collection 1: User Profiles (/users/{userId})
+    match /users/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.uid == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        userId == request.auth.uid &&
+        incoming().email == request.auth.token.email &&
+        incoming().status == 'active' &&
+        incoming().pdfJobsCount == 0 &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role == 'user' || isAdmin());
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            existing().status == 'active' &&
+            incoming().role == existing().role &&
+            incoming().status == existing().status &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && (isOwner(userId) || isAdmin());
+    }
+
+    // Collection 2: Admin Registry (/admins/{adminId})
+    match /admins/{adminId} {
+      allow get: if isVerifiedUser() && isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isAdmin() &&
+        isValidId(adminId) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == adminId &&
+        incoming().grantedBy == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(adminId));
+
+      allow update: if isAdmin() &&
+        isValidId(adminId) &&
+        isValidAdminRecord(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt;
+
+      allow delete: if isAdmin() && isValidId(adminId) && adminId != request.auth.uid;
+    }
+
+    // Collection 3: PDF Processing Jobs (/pdf_jobs/{jobId})
+    match /pdf_jobs/{jobId} {
+      allow get: if isVerifiedUser() && isValidId(jobId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(jobId) &&
+        isValidPdfJob(incoming()) &&
+        incoming().id == jobId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isVerifiedUser() &&
+        isValidId(jobId) &&
+        isValidPdfJob(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt && (
+          isAdmin() ||
+          (
+            existing().userId == request.auth.uid &&
+            existing().status == 'processing' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'outputSizeBytes', 'durationMs', 'errorCategory'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(jobId);
+    }
+
+    // Collection 4: User Activity Events (/activity_events/{eventId})
+    match /activity_events/{eventId} {
+      allow get: if isVerifiedUser() && isValidId(eventId) && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (resource.data.userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(eventId) &&
+        isValidActivityEvent(incoming()) &&
+        incoming().id == eventId &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isAdmin() &&
+        isValidId(eventId) &&
+        isValidActivityEvent(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt;
+
+      allow delete: if isAdmin() && isValidId(eventId);
+    }
+
+    // Collection 5: Immutable Admin Audit Logs (/admin_audit_logs/{logId})
+    match /admin_audit_logs/{logId} {
+      allow get: if isAdmin() && isValidId(logId);
+      allow list: if isAdmin();
+
+      allow create: if isAdmin() &&
+        isValidId(logId) &&
+        isValidAdminAuditLog(incoming()) &&
+        incoming().id == logId &&
+        incoming().adminUid == request.auth.uid &&
+        incoming().adminEmail == request.auth.token.email &&
+        incoming().createdAt == request.time;
+
+      allow update, delete: if false;
+    }
+
+    // Collection 6: System Settings (/system_settings/{settingId})
+    match /system_settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'global';
+      allow list: if isAdmin();
+
+      allow create: if isAdmin() &&
+        isValidId(settingId) &&
+        settingId == 'global' &&
+        isValidSystemSettings(incoming()) &&
+        incoming().updatedBy == request.auth.uid &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isAdmin() &&
+        isValidId(settingId) &&
+        settingId == 'global' &&
+        isValidSystemSettings(incoming()) &&
+        incoming().updatedBy == request.auth.uid &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'registrationEnabled',
+          'googleAuthEnabled',
+          'emailAuthEnabled',
+          'maintenanceMode',
+          'maintenanceMessage',
+          'rateLimitPerMinute',
+          'maxUploadSizeMb',
+          'activityRetentionDays',
+          'updatedBy',
+          'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+  }
+}
