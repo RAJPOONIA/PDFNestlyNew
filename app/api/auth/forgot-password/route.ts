@@ -4,72 +4,173 @@ import {
   resetPasswordWithToken,
   checkRateLimit,
 } from '@/lib/platform-store';
-import { getClientIp } from '@/lib/server-auth';
+import { clearSessionCookie, getClientIp } from '@/lib/server-auth';
+import {
+  isPasswordResetEmailConfigured,
+  sendPasswordResetEmail,
+} from '@/lib/password-reset-mailer';
+import { syncFirebaseUserPasswordAndRevokeSessions } from '@/lib/firebase-admin';
+
+const SECURITY_HEADERS: Record<string, string> = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+  Pragma: 'no-cache',
+  'Referrer-Policy': 'no-referrer',
+};
+
+function resolveAppOrigin(req: NextRequest): string {
+  const configuredAppUrl = (process.env.APP_URL || '').trim();
+  if (
+    configuredAppUrl &&
+    configuredAppUrl !== 'MY_APP_URL' &&
+    /^https?:\/\//i.test(configuredAppUrl)
+  ) {
+    return configuredAppUrl.replace(/\/+$/, '');
+  }
+  return req.nextUrl?.origin || 'https://pdfnestly.com';
+}
 
 export async function POST(req: NextRequest) {
   try {
     const ip = getClientIp(req);
-    const rate = checkRateLimit(`pw_reset:${ip}`, 10);
-    if (!rate.allowed) {
-      return NextResponse.json(
-        { error: 'Too many password reset requests. Please wait a minute.' },
-        { status: 429 }
-      );
-    }
-
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const action = String(body.action || 'request');
 
     if (action === 'confirm') {
-      const email = String(body.email || '');
-      const token = String(body.token || '');
-      const newPassword = String(body.newPassword || '');
-
-      if (!email || !token || !newPassword) {
+      const ipRate = checkRateLimit(`reset_confirm_ip:${ip}`, 10);
+      if (!ipRate.allowed) {
         return NextResponse.json(
-          { error: 'Email, reset token, and new password are required.' },
-          { status: 400 }
+          { error: 'Too many password reset attempts. Please wait a minute.' },
+          {
+            status: 429,
+            headers: {
+              ...SECURITY_HEADERS,
+              'Retry-After': String(ipRate.retryAfterSeconds),
+            },
+          }
         );
       }
 
-      const user = resetPasswordWithToken({ email, token, newPassword });
-      return NextResponse.json({
-        success: true,
-        user,
-        message: 'Password updated! You can now sign in with your new password.',
+      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const token = typeof body.token === 'string' ? body.token.trim() : '';
+      const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
+
+      const targetRateKey = email || token.slice(0, 16) || 'anon';
+      const targetRate = checkRateLimit(`reset_confirm_target:${targetRateKey}`, 5);
+      if (!targetRate.allowed) {
+        return NextResponse.json(
+          { error: 'Too many password reset attempts. Please wait a minute.' },
+          {
+            status: 429,
+            headers: {
+              ...SECURITY_HEADERS,
+              'Retry-After': String(targetRate.retryAfterSeconds),
+            },
+          }
+        );
+      }
+
+      if (!token || !newPassword) {
+        return NextResponse.json(
+          { error: 'Invalid or expired password reset token.' },
+          { status: 400, headers: SECURITY_HEADERS }
+        );
+      }
+
+      const updatedUser = resetPasswordWithToken({
+        email: email || undefined,
+        token,
+        newPassword,
       });
+
+      // Best-effort synchronization with Firebase Authentication so Firebase and custom store passwords never diverge
+      await syncFirebaseUserPasswordAndRevokeSessions(
+        updatedUser.email,
+        newPassword
+      );
+
+      const res = NextResponse.json(
+        {
+          success: true,
+          message:
+            'Your password has been reset successfully. You can now sign in with your new password.',
+        },
+        { headers: SECURITY_HEADERS }
+      );
+      return clearSessionCookie(res);
     }
 
-    const email = String(body.email || '');
-    if (!email) {
+    // Default action === 'request'
+    const ipRate = checkRateLimit(`reset_req_ip:${ip}`, 10);
+    if (!ipRate.allowed) {
       return NextResponse.json(
-        { error: 'Please enter your email address.' },
-        { status: 400 }
+        { error: 'Too many password reset requests. Please wait a minute.' },
+        {
+          status: 429,
+          headers: {
+            ...SECURITY_HEADERS,
+            'Retry-After': String(ipRate.retryAfterSeconds),
+          },
+        }
       );
     }
 
-    const resetReq = createPasswordResetRequest(email);
-    const resetUrl = resetReq.resetToken
-      ? `/forgot-password?email=${encodeURIComponent(
-          email.trim().toLowerCase()
-        )}&token=${encodeURIComponent(resetReq.resetToken)}`
-      : null;
+    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return NextResponse.json(
+        { error: 'Please enter a valid email address.' },
+        { status: 400, headers: SECURITY_HEADERS }
+      );
+    }
 
-    return NextResponse.json({
-      accepted: true,
-      resetUrl,
-      message:
-        'If an account exists for that email address, a password reset link has been prepared.',
-    });
+    const emailRate = checkRateLimit(`reset_req_email:${email}`, 5);
+    if (!emailRate.allowed) {
+      return NextResponse.json(
+        { error: 'Too many password reset requests. Please wait a minute.' },
+        {
+          status: 429,
+          headers: {
+            ...SECURITY_HEADERS,
+            'Retry-After': String(emailRate.retryAfterSeconds),
+          },
+        }
+      );
+    }
+
+    const emailDeliveryConfigured = isPasswordResetEmailConfigured();
+    const resetReq = createPasswordResetRequest(email);
+
+    if (emailDeliveryConfigured && resetReq.resetToken) {
+      const origin = resolveAppOrigin(req);
+      const resetUrl = `${origin}/forgot-password?token=${encodeURIComponent(
+        resetReq.resetToken
+      )}`;
+      await sendPasswordResetEmail({
+        to: email,
+        resetUrl,
+        expiresInMinutes: resetReq.expiresInMinutes,
+      });
+    }
+
+    return NextResponse.json(
+      {
+        accepted: true,
+        emailSent: emailDeliveryConfigured,
+        emailDeliveryConfigured,
+        message: emailDeliveryConfigured
+          ? 'If an account exists for that email address, we have sent password reset instructions to your inbox. Please check your email and follow the link within 15 minutes.'
+          : 'If an account exists for that email address, your reset request was recorded. Outbound email delivery is not yet configured on this server—please check your email once an administrator configures a transactional email provider.',
+      },
+      { headers: SECURITY_HEADERS }
+    );
   } catch (err) {
     return NextResponse.json(
       {
         error:
           err instanceof Error
             ? err.message
-            : 'Password reset operation failed.',
+            : 'Invalid or expired password reset token.',
       },
-      { status: 400 }
+      { status: 400, headers: SECURITY_HEADERS }
     );
   }
 }

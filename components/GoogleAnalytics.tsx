@@ -14,6 +14,31 @@ declare global {
   }
 }
 
+const SENSITIVE_QUERY_KEYS = new Set([
+  'token',
+  'resettoken',
+  'verificationtoken',
+  'oobcode',
+  'code',
+  'key',
+  'secret',
+  'password',
+  'email',
+]);
+
+export function sanitizeAnalyticsSearchParams(rawSearch: string): string {
+  if (!rawSearch) return '';
+  const params = new URLSearchParams(
+    rawSearch.startsWith('?') ? rawSearch.slice(1) : rawSearch
+  );
+  for (const key of Array.from(params.keys())) {
+    if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) {
+      params.delete(key);
+    }
+  }
+  return params.toString();
+}
+
 function GoogleAnalyticsPageViewTracker({
   measurementId,
 }: {
@@ -25,8 +50,11 @@ function GoogleAnalyticsPageViewTracker({
 
   useEffect(() => {
     if (!pathname) return;
-    const queryString = searchParams?.toString();
-    const currentPagePath = queryString ? `${pathname}?${queryString}` : pathname;
+    const rawQueryString = searchParams?.toString() || '';
+    const sanitizedQuery = sanitizeAnalyticsSearchParams(rawQueryString);
+    const currentPagePath = sanitizedQuery
+      ? `${pathname}?${sanitizedQuery}`
+      : pathname;
 
     // The initial page_view is sent once by the inline gtag('config', ...) script.
     // Record the initial path on first mount so React StrictMode or hydration
@@ -43,10 +71,11 @@ function GoogleAnalyticsPageViewTracker({
     lastTrackedPathRef.current = currentPagePath;
 
     if (typeof window !== 'undefined' && typeof window.gtag === 'function') {
+      const safeLocation = `${window.location.origin}${currentPagePath}`;
       window.gtag('config', measurementId, {
         page_path: currentPagePath,
         page_title: document.title,
-        page_location: window.location.href,
+        page_location: safeLocation,
       });
     }
   }, [pathname, searchParams, measurementId]);
@@ -77,9 +106,20 @@ export function GoogleAnalytics({
             function gtag(){dataLayer.push(arguments);}
             window.gtag = gtag;
             gtag('js', new Date());
-            gtag('config', '${measurementId}', {
-              page_path: window.location.pathname + window.location.search
-            });
+            (function() {
+              var params = new URLSearchParams(window.location.search || '');
+              ['token','resettoken','verificationtoken','oobcode','code','key','secret','password','email'].forEach(function(k) {
+                Array.from(params.keys()).forEach(function(actualKey) {
+                  if (actualKey.toLowerCase() === k) params.delete(actualKey);
+                });
+              });
+              var qs = params.toString();
+              var safePath = window.location.pathname + (qs ? '?' + qs : '');
+              gtag('config', '${measurementId}', {
+                page_path: safePath,
+                page_location: window.location.origin + safePath
+              });
+            })();
           `,
         }}
       />

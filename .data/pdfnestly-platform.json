@@ -35,6 +35,24 @@
   "pdfJobs": [],
   "activityEvents": [
     {
+      "id": "evt_4a5c073011cd451fba06",
+      "dedupeKey": null,
+      "userId": null,
+      "userEmail": null,
+      "anonymousSessionId": "anon_mvtafu8r_4tz81pvi",
+      "eventType": "page_viewed",
+      "toolSlug": null,
+      "toolName": null,
+      "pagePath": "/forgot-password",
+      "status": "info",
+      "durationMs": null,
+      "fileSizeBytes": null,
+      "outputSizeBytes": null,
+      "errorCategory": null,
+      "jobId": null,
+      "createdAt": "2026-10-29T08:35:23.664Z"
+    },
+    {
       "id": "evt_2b6343815a824865ad50",
       "dedupeKey": null,
       "userId": null,

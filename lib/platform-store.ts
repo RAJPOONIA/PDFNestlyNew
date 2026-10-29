@@ -973,65 +973,182 @@ export function generateEmailVerificationTokenForUser(uid: string): string {
   return token;
 }
 
+const RESET_TOKEN_EXPIRY_MS = 15 * 60 * 1000; // 15 minutes
+const GENERIC_PASSWORD_RESET_ERROR =
+  'Invalid or expired password reset token.';
+
+export function hashResetToken(rawToken: string): string {
+  const digest = crypto
+    .createHash('sha256')
+    .update(`pdfnestly-reset-v1:${rawToken.trim()}`)
+    .digest('hex');
+  return `sha256:${digest}`;
+}
+
+function verifyResetTokenHash(
+  rawToken: string,
+  storedTokenHash: string | null | undefined
+): boolean {
+  if (
+    typeof rawToken !== 'string' ||
+    !/^[a-f0-9]{48,64}$/i.test(rawToken.trim()) ||
+    typeof storedTokenHash !== 'string' ||
+    !storedTokenHash.startsWith('sha256:')
+  ) {
+    return false;
+  }
+  const expectedHex = storedTokenHash.slice('sha256:'.length);
+  if (!/^[a-f0-9]{64}$/i.test(expectedHex)) {
+    return false;
+  }
+  const candidateHash = hashResetToken(rawToken).slice('sha256:'.length);
+  const bufA = Buffer.from(candidateHash, 'hex');
+  const bufB = Buffer.from(expectedHex, 'hex');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export function createPasswordResetRequest(email: string): {
   accepted: boolean;
   resetToken?: string;
   uid?: string;
+  expiresInMinutes: number;
 } {
+  const expiresInMinutes = Math.round(RESET_TOKEN_EXPIRY_MS / 60000);
+  if (!email || typeof email !== 'string') {
+    return { accepted: true, expiresInMinutes };
+  }
   const db = loadDatabase();
   const normalized = email.trim().toLowerCase();
+  if (!validateEmailFormat(normalized)) {
+    return { accepted: true, expiresInMinutes };
+  }
   const user = db.users.find((u) => u.email.toLowerCase() === normalized);
   if (!user || user.status === 'suspended') {
     // Always return accepted: true to prevent email enumeration
-    return { accepted: true };
+    return { accepted: true, expiresInMinutes };
   }
-  const resetToken = crypto.randomBytes(24).toString('hex');
-  user.resetToken = resetToken;
-  user.resetTokenExpiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 minutes
+  // Generate a 256-bit (32-byte) cryptographically random single-use token.
+  // Store ONLY its SHA-256 digest at rest; overwrite any previous pending token.
+  const resetToken = crypto.randomBytes(32).toString('hex');
+  user.resetToken = hashResetToken(resetToken);
+  user.resetTokenExpiresAt = new Date(
+    Date.now() + RESET_TOKEN_EXPIRY_MS
+  ).toISOString();
   user.updatedAt = new Date().toISOString();
+  clearFailedLoginAttempts(`reset_confirm:${user.uid}`);
   saveDatabase(db);
-  return { accepted: true, resetToken, uid: user.uid };
+  return {
+    accepted: true,
+    resetToken,
+    uid: user.uid,
+    expiresInMinutes,
+  };
 }
 
 export function resetPasswordWithToken(params: {
-  email: string;
+  email?: string;
   token: string;
   newPassword: string;
 }): SafeUserProfile {
-  const db = loadDatabase();
-  const normalized = params.email.trim().toLowerCase();
-  const user = db.users.find((u) => u.email.toLowerCase() === normalized);
-  if (!user || !user.resetToken || user.resetToken !== params.token) {
-    throw new Error('Invalid or expired password reset token.');
-  }
-  if (
-    !user.resetTokenExpiresAt ||
-    new Date(user.resetTokenExpiresAt).getTime() < Date.now()
-  ) {
-    throw new Error('Password reset token has expired. Please request a new one.');
-  }
-
-  const pwCheck = validatePasswordStrength(params.newPassword);
+  const pwCheck = validatePasswordStrength(params.newPassword || '');
   if (!pwCheck.valid) {
     throw new Error(pwCheck.error || 'Weak password.');
   }
 
-  user.passwordHash = hashPasswordScrypt(params.newPassword);
-  user.resetToken = null;
-  user.resetTokenExpiresAt = null;
-  user.updatedAt = new Date().toISOString();
+  const rawToken = typeof params.token === 'string' ? params.token.trim() : '';
+  const hasValidTokenShape = /^[a-f0-9]{48,64}$/i.test(rawToken);
+  const normalizedEmail =
+    typeof params.email === 'string' ? params.email.trim().toLowerCase() : '';
+
+  const db = loadDatabase();
+
+  if (!hasValidTokenShape) {
+    if (normalizedEmail) {
+      const targetByEmail = db.users.find(
+        (u) => u.email.toLowerCase() === normalizedEmail
+      );
+      if (targetByEmail) {
+        const attempt = recordFailedLoginAttempt(
+          `reset_confirm:${targetByEmail.uid}`
+        );
+        if (attempt.locked && targetByEmail.resetToken) {
+          targetByEmail.resetToken = null;
+          targetByEmail.resetTokenExpiresAt = null;
+          saveDatabase(db);
+        }
+      }
+    }
+    throw new Error(GENERIC_PASSWORD_RESET_ERROR);
+  }
+
+  let matchedUser: PlatformUser | undefined;
+  for (const u of db.users) {
+    if (verifyResetTokenHash(rawToken, u.resetToken)) {
+      matchedUser = u;
+    }
+  }
+
+  if (normalizedEmail) {
+    const userByEmail = db.users.find(
+      (u) => u.email.toLowerCase() === normalizedEmail
+    );
+    if (!userByEmail || !matchedUser || userByEmail.uid !== matchedUser.uid) {
+      if (userByEmail) {
+        const attempt = recordFailedLoginAttempt(
+          `reset_confirm:${userByEmail.uid}`
+        );
+        if (attempt.locked && userByEmail.resetToken) {
+          userByEmail.resetToken = null;
+          userByEmail.resetTokenExpiresAt = null;
+          saveDatabase(db);
+        }
+      }
+      throw new Error(GENERIC_PASSWORD_RESET_ERROR);
+    }
+  }
+
+  if (!matchedUser || matchedUser.status === 'suspended') {
+    throw new Error(GENERIC_PASSWORD_RESET_ERROR);
+  }
+
+  const confirmLock = checkBruteForceLockout(
+    `reset_confirm:${matchedUser.uid}`
+  );
+  if (confirmLock.locked) {
+    matchedUser.resetToken = null;
+    matchedUser.resetTokenExpiresAt = null;
+    saveDatabase(db);
+    throw new Error(GENERIC_PASSWORD_RESET_ERROR);
+  }
+
+  if (
+    !matchedUser.resetTokenExpiresAt ||
+    new Date(matchedUser.resetTokenExpiresAt).getTime() < Date.now()
+  ) {
+    matchedUser.resetToken = null;
+    matchedUser.resetTokenExpiresAt = null;
+    saveDatabase(db);
+    throw new Error(GENERIC_PASSWORD_RESET_ERROR);
+  }
+
+  matchedUser.passwordHash = hashPasswordScrypt(params.newPassword);
+  matchedUser.resetToken = null;
+  matchedUser.resetTokenExpiresAt = null;
+  matchedUser.updatedAt = new Date().toISOString();
 
   // Revoke existing sessions on password reset for security
   const nowIso = new Date().toISOString();
   db.sessions.forEach((s) => {
-    if (s.userId === user.uid && !s.revokedAt) {
+    if (s.userId === matchedUser!.uid && !s.revokedAt) {
       s.revokedAt = nowIso;
     }
   });
 
-  clearFailedLoginAttempts(`login:${normalized}`);
+  clearFailedLoginAttempts(`login:${matchedUser.email.toLowerCase()}`);
+  clearFailedLoginAttempts(`reset_confirm:${matchedUser.uid}`);
   saveDatabase(db);
-  return toSafeUser(user);
+  return toSafeUser(matchedUser);
 }
 
 export function updateUserProfile(
