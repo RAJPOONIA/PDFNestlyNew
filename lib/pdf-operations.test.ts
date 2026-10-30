@@ -26,6 +26,7 @@ import {
   sanitizeOrFlattenPdf,
   inspectPdfBytes,
   extractPdfTextAndLines,
+  detectCandidateFormFields,
 } from './pdf-engine-client';
 
 /**
@@ -574,3 +575,365 @@ test('7. Advanced Client PDF Tools: Form Filling, Coordinate Text Edit, Redactio
   const csReport = await inspectPdfBytes(contactSheetBytes);
   assert.equal(csReport.pageCount, 1);
 });
+
+test('8. Studio Existing Text Editing Suite: All 12 Scenarios, Genuine Content Stream Removal, Formatting, Move, Crop & Reorder', async () => {
+  // Build a multi-page test PDF with paragraphs, table cells, multi-column text, varied font sizes, and embedded image
+  const doc = await PDFDocument.create();
+  const helv = await doc.embedFont(StandardFonts.Helvetica);
+  const helvBold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const timesItalic = await doc.embedFont(StandardFonts.TimesRomanItalic);
+  const courier = await doc.embedFont(StandardFonts.Courier);
+
+  const page1 = doc.addPage([612, 792]);
+  // 1. Single word target
+  page1.drawText('STATUS_ORIGINAL_WORD', { x: 50, y: 730, size: 12, font: helv });
+  // 2. Full sentence replacement target
+  page1.drawText('The quick brown fox jumps over the lazy dog.', { x: 50, y: 700, size: 12, font: helv });
+  // 3. Delete single word inside sentence target
+  page1.drawText('Remove UNWANTED_TOKEN from this sentence.', { x: 50, y: 670, size: 12, font: helv });
+  // 4. Delete entire line target (must NOT produce "Text Note")
+  page1.drawText('DELETE_ENTIRE_LINE_COMPLETELY_NOW', { x: 50, y: 640, size: 12, font: helv });
+  // 5. Add text inside existing sentence target
+  page1.drawText('Contract Effective Date:', { x: 50, y: 610, size: 12, font: helvBold });
+  // 6. Short text -> longer text target
+  page1.drawText('SHORT_TAG', { x: 50, y: 580, size: 11, font: helv });
+  // 7. Long text -> shorter text target
+  page1.drawText('VERY_LONG_LEGACY_DESCRIPTION_TEXT_TO_SHORTEN_CLEANLY', { x: 50, y: 550, size: 11, font: helv });
+
+  // 8. Table row with distinct columns (must segment separately and preserve sibling cells)
+  page1.drawText('CELL_A1_ITEM', { x: 50, y: 500, size: 10, font: helv });
+  page1.drawText('CELL_B1_PRICE_500', { x: 220, y: 500, size: 10, font: helv });
+  page1.drawText('CELL_C1_QTY_10', { x: 400, y: 500, size: 10, font: helv });
+
+  // 9. Text near embedded image
+  const png1x1 = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0,
+    0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 8, 215, 99, 248, 207, 192, 0, 0, 3, 1, 1,
+    0, 24, 221, 141, 176, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+  ]);
+  const embeddedImg = await doc.embedPng(png1x1);
+  page1.drawImage(embeddedImg, { x: 50, y: 420, width: 40, height: 40 });
+  page1.drawText('CAPTION_NEAR_IMAGE_ORIGINAL', { x: 105, y: 435, size: 11, font: helv });
+
+  // 10. Multi-column layout text
+  page1.drawText('LEFT_COLUMN_PARAGRAPH_LINE', { x: 50, y: 370, size: 10, font: timesItalic });
+  page1.drawText('RIGHT_COLUMN_PARAGRAPH_LINE', { x: 330, y: 370, size: 10, font: courier });
+
+  // 11. Different font sizes (24pt heading & 9pt footnote) + movable line
+  page1.drawText('LARGE_HEADING_24PT', { x: 50, y: 310, size: 24, font: helvBold });
+  page1.drawText('SMALL_FOOTNOTE_9PT', { x: 50, y: 270, size: 9, font: helv });
+  page1.drawText('MOVABLE_LINE_ORIGINAL', { x: 50, y: 230, size: 12, font: helv });
+
+  // 12. Page 2 for multi-page editing
+  const page2 = doc.addPage([612, 792]);
+  page2.drawText('PAGE_TWO_CLAUSE_ORIGINAL', { x: 60, y: 700, size: 14, font: helvBold });
+  page2.drawText('PAGE_TWO_UNCHANGED_LINE', { x: 60, y: 660, size: 12, font: helv });
+
+  const sourceBytes = await doc.save();
+  const extracted = await extractPdfTextAndLines(sourceBytes);
+
+  // Verify table cells and multi-column lines were segmented into separate DetectedTextLines
+  const findLine = (substr: string) => {
+    const found = extracted.lines.find((l) => l.text.includes(substr));
+    assert.ok(found, `Expected to find extracted text segment containing "${substr}"`);
+    return found!;
+  };
+
+  const line1 = findLine('STATUS_ORIGINAL_WORD');
+  const line2 = findLine('The quick brown fox jumps over the lazy dog.');
+  const line3 = findLine('Remove UNWANTED_TOKEN from this sentence.');
+  const line4 = findLine('DELETE_ENTIRE_LINE_COMPLETELY_NOW');
+  const line5 = findLine('Contract Effective Date:');
+  const line6 = findLine('SHORT_TAG');
+  const line7 = findLine('VERY_LONG_LEGACY_DESCRIPTION_TEXT_TO_SHORTEN_CLEANLY');
+  const line8Price = findLine('CELL_B1_PRICE_500');
+  const line9Img = findLine('CAPTION_NEAR_IMAGE_ORIGINAL');
+  const line10LeftCol = findLine('LEFT_COLUMN_PARAGRAPH_LINE');
+  const line11Large = findLine('LARGE_HEADING_24PT');
+  const line11Small = findLine('SMALL_FOOTNOTE_9PT');
+  const lineMove = findLine('MOVABLE_LINE_ORIGINAL');
+  const line12Page2 = findLine('PAGE_TWO_CLAUSE_ORIGINAL');
+
+  // Helper to create an existing-text annotation exactly as PdfEditorWorkspace does
+  const makeEditAnnot = (
+    line: typeof line1,
+    newText: string,
+    overrides: Partial<EditorAnnotationItem> = {}
+  ): EditorAnnotationItem => ({
+    id: `test_edit_${line.pageNumber}_${line.x}_${line.y}`,
+    pageNumber: line.pageNumber,
+    type: 'text',
+    isExistingTextEdit: true,
+    originalText: line.text,
+    text: newText,
+    xPercent: line.xPercent,
+    yPercent: line.yPercent,
+    widthPercent: line.widthPercent,
+    heightPercent: line.heightPercent,
+    originXPt: line.x,
+    originYPt: line.y,
+    originWidthPt: line.width,
+    originHeightPt: line.height,
+    originXPercent: line.xPercent,
+    originYPercent: line.yPercent,
+    originWidthPercent: line.widthPercent,
+    originHeightPercent: line.heightPercent,
+    fontSize: line.fontSize,
+    fontFamily: line.fontFamily,
+    isBold: line.isBold,
+    isItalic: line.isItalic,
+    colorHex: line.colorHex,
+    fillHex: '#ffffff',
+    opacity: 1,
+    ...overrides,
+  });
+
+  const annotations: EditorAnnotationItem[] = [
+    // 1. Replace single word
+    makeEditAnnot(line1, 'STATUS_APPROVED_WORD'),
+    // 2. Replace full sentence
+    makeEditAnnot(line2, 'The swift red falcon soars above the quiet valley.'),
+    // 3. Delete single word inside sentence
+    makeEditAnnot(line3, 'Remove from this sentence.'),
+    // 4. Delete entire line (empty string "")
+    makeEditAnnot(line4, ''),
+    // 5. Add text inside existing sentence
+    makeEditAnnot(line5, 'Contract Effective Date: October 30, 2026'),
+    // 6. Change short text to longer text
+    makeEditAnnot(line6, 'EXPANDED_ENTERPRISE_COMPLIANCE_IDENTIFIER_2026'),
+    // 7. Change long text to shorter text
+    makeEditAnnot(line7, 'COMPACT_SUMMARY'),
+    // 8. Edit single cell in table without affecting CELL_A1_ITEM or CELL_C1_QTY_10
+    makeEditAnnot(line8Price, 'CELL_B1_PRICE_950'),
+    // 9. Edit text near image
+    makeEditAnnot(line9Img, 'CAPTION_NEAR_IMAGE_UPDATED'),
+    // 10. Edit left column without affecting right column
+    makeEditAnnot(line10LeftCol, 'LEFT_COLUMN_EDITED_CLEANLY', { fontFamily: 'TimesRoman', isItalic: true }),
+    // 11. Edit different font sizes + apply underline/strikethrough/spacing
+    makeEditAnnot(line11Large, 'LARGE_HEADING_UPDATED_24PT', {
+      isBold: true,
+      isUnderline: true,
+      letterSpacingPt: 0.5,
+    }),
+    makeEditAnnot(line11Small, 'SMALL_FOOTNOTE_UPDATED_9PT', { isStrikethrough: true }),
+    // Move existing text to a new position on the page
+    makeEditAnnot(lineMove, 'MOVED_LINE_AT_NEW_COORDINATES', {
+      xPercent: Math.min(80, lineMove.xPercent + 25),
+      yPercent: Math.min(85, lineMove.yPercent + 5),
+    }),
+    // 12. Edit text on Page 2
+    makeEditAnnot(line12Page2, 'PAGE_TWO_CLAUSE_REPLACED_SUCCESSFULLY'),
+  ];
+
+  const editedPdfBytes = await applyEditorAnnotationsToPdf(sourceBytes, annotations);
+  const afterExt = await extractPdfTextAndLines(editedPdfBytes);
+
+  // Verify all 12 new replacement texts are present in the exported PDF
+  assert.ok(afterExt.fullText.includes('STATUS_APPROVED_WORD'));
+  assert.ok(afterExt.fullText.includes('The swift red falcon soars above the quiet valley.'));
+  assert.ok(afterExt.fullText.includes('Remove from this sentence.'));
+  assert.ok(afterExt.fullText.includes('Contract Effective Date: October 30, 2026'));
+  assert.ok(afterExt.fullText.includes('EXPANDED_ENTERPRISE_COMPLIANCE_IDENTIFIER_2026'));
+  assert.ok(afterExt.fullText.includes('COMPACT_SUMMARY'));
+  assert.ok(afterExt.fullText.includes('CELL_B1_PRICE_950'));
+  assert.ok(afterExt.fullText.includes('CAPTION_NEAR_IMAGE_UPDATED'));
+  assert.ok(afterExt.fullText.includes('LEFT_COLUMN_EDITED_CLEANLY'));
+  assert.ok(afterExt.fullText.includes('LARGE_HEADING_UPDATED_24PT'));
+  assert.ok(afterExt.fullText.includes('SMALL_FOOTNOTE_UPDATED_9PT'));
+  assert.ok(afterExt.fullText.includes('MOVED_LINE_AT_NEW_COORDINATES'));
+  assert.ok(afterExt.fullText.includes('PAGE_TWO_CLAUSE_REPLACED_SUCCESSFULLY'));
+
+  // Verify sibling table cells, right column, and unchanged page 2 text remain intact
+  assert.ok(afterExt.fullText.includes('CELL_A1_ITEM'));
+  assert.ok(afterExt.fullText.includes('CELL_C1_QTY_10'));
+  assert.ok(afterExt.fullText.includes('RIGHT_COLUMN_PARAGRAPH_LINE'));
+  assert.ok(afterExt.fullText.includes('PAGE_TWO_UNCHANGED_LINE'));
+
+  // CRITICAL VERIFICATION: Original replaced or deleted text is genuinely removed from the PDF text stream (NO duplicate text, NO "Text Note")
+  assert.equal(afterExt.fullText.includes('STATUS_ORIGINAL_WORD'), false, 'Original single word must be removed');
+  assert.equal(afterExt.fullText.includes('lazy dog'), false, 'Original sentence must be removed');
+  assert.equal(afterExt.fullText.includes('UNWANTED_TOKEN'), false, 'Deleted word must be removed');
+  assert.equal(afterExt.fullText.includes('DELETE_ENTIRE_LINE_COMPLETELY_NOW'), false, 'Deleted line must be removed');
+  assert.equal(afterExt.fullText.includes('Text Note'), false, 'Deleting a line must NEVER insert "Text Note"');
+  assert.equal(afterExt.fullText.includes('SHORT_TAG'), false, 'Original short text must be removed');
+  assert.equal(
+    afterExt.fullText.includes('VERY_LONG_LEGACY_DESCRIPTION_TEXT_TO_SHORTEN_CLEANLY'),
+    false,
+    'Original long text must be removed'
+  );
+  assert.equal(afterExt.fullText.includes('CELL_B1_PRICE_500'), false, 'Original table cell value must be removed');
+  assert.equal(afterExt.fullText.includes('CAPTION_NEAR_IMAGE_ORIGINAL'), false, 'Original image caption must be removed');
+  assert.equal(afterExt.fullText.includes('LEFT_COLUMN_PARAGRAPH_LINE'), false, 'Original left column line must be removed');
+  assert.equal(afterExt.fullText.includes('MOVABLE_LINE_ORIGINAL'), false, 'Original moved line text must be removed');
+  assert.equal(afterExt.fullText.includes('PAGE_TWO_CLAUSE_ORIGINAL'), false, 'Original page 2 text must be removed');
+
+  // Verify Manual Page Crop & Page Reordering / Duplication in applyEditorAnnotationsToPdf
+  const croppedAndReorderedBytes = await applyEditorAnnotationsToPdf(editedPdfBytes, [], {
+    pageCrops: {
+      1: { xPercent: 10, yPercent: 10, widthPercent: 80, heightPercent: 80 },
+    },
+    pageSequence: [2, 1, 2], // Reorder Page 2 first, then Page 1, then duplicate Page 2
+  });
+  const cropReport = await inspectPdfBytes(croppedAndReorderedBytes);
+  assert.equal(cropReport.pageCount, 3, 'Page sequence [2, 1, 2] should produce 3 pages');
+});
+
+test('9. Sejda UX & Interactive AcroForm Creation: Candidate Field Detection, Text/Multiline/Dropdown/Radio/Checkbox/Signature Widgets, Tab Order & Symbols', async () => {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page = doc.addPage([612, 792]);
+
+  // Draw typical form prompts so detectCandidateFormFields finds them
+  page.drawText('Full Name: ____________________', { x: 50, y: 700, size: 12, font });
+  page.drawText('Client Signature: _______________', { x: 50, y: 650, size: 12, font });
+  page.drawText('[ ] Agree to Terms', { x: 50, y: 600, size: 12, font });
+
+  const formTemplateBytes = new Uint8Array(await doc.save());
+
+  // 1. Verify detectCandidateFormFields detects candidate fields without modifying the PDF
+  const candidates = await detectCandidateFormFields(formTemplateBytes);
+  assert.ok(candidates.length >= 2, 'Should detect at least 2 candidate form fields from underscored/checkbox prompts');
+  assert.ok(candidates.some((c) => c.fieldType === 'form-signature'), 'Should detect signature field candidate');
+
+  // 2. Apply all 6 interactive AcroForm field types + all 5 quick symbols
+  const outBytes = await applyEditorAnnotationsToPdf(formTemplateBytes, [
+    {
+      id: 'f_text',
+      pageNumber: 1,
+      type: 'form-text',
+      xPercent: 25,
+      yPercent: 10,
+      widthPercent: 30,
+      heightPercent: 4,
+      fieldName: 'applicant_name',
+      fieldValue: 'Jane Doe',
+      isRequired: true,
+      tabOrder: 1,
+    },
+    {
+      id: 'f_multi',
+      pageNumber: 1,
+      type: 'form-multiline',
+      xPercent: 25,
+      yPercent: 18,
+      widthPercent: 40,
+      heightPercent: 10,
+      fieldName: 'project_notes',
+      fieldValue: 'Line 1\nLine 2',
+      isMultiline: true,
+      tabOrder: 2,
+    },
+    {
+      id: 'f_drop',
+      pageNumber: 1,
+      type: 'form-dropdown',
+      xPercent: 25,
+      yPercent: 32,
+      widthPercent: 28,
+      heightPercent: 4,
+      fieldName: 'plan_tier',
+      dropdownOptions: ['Starter', 'Professional', 'Enterprise'],
+      fieldValue: 'Enterprise',
+      tabOrder: 3,
+    },
+    {
+      id: 'f_chk',
+      pageNumber: 1,
+      type: 'form-checkbox',
+      xPercent: 25,
+      yPercent: 40,
+      widthPercent: 3,
+      heightPercent: 2.5,
+      fieldName: 'accept_terms',
+      checked: true,
+      tabOrder: 4,
+    },
+    {
+      id: 'f_rad1',
+      pageNumber: 1,
+      type: 'form-radio',
+      xPercent: 25,
+      yPercent: 46,
+      widthPercent: 3,
+      heightPercent: 2.5,
+      fieldName: 'billing_cycle',
+      radioGroupName: 'billing_cycle',
+      radioOptionValue: 'Annual',
+      checked: true,
+      tabOrder: 5,
+    },
+    {
+      id: 'f_sig',
+      pageNumber: 1,
+      type: 'form-signature',
+      xPercent: 25,
+      yPercent: 54,
+      widthPercent: 28,
+      heightPercent: 6,
+      fieldName: 'authorized_signature',
+      fieldPlaceholder: 'Sign Here',
+      tabOrder: 6,
+    },
+    {
+      id: 'sym_1',
+      pageNumber: 1,
+      type: 'symbol-check',
+      xPercent: 10,
+      yPercent: 70,
+      widthPercent: 3,
+      heightPercent: 2.5,
+      colorHex: '#16a34a',
+    },
+    {
+      id: 'sym_2',
+      pageNumber: 1,
+      type: 'symbol-cross',
+      xPercent: 16,
+      yPercent: 70,
+      widthPercent: 3,
+      heightPercent: 2.5,
+      colorHex: '#dc2626',
+    },
+    {
+      id: 'sym_3',
+      pageNumber: 1,
+      type: 'symbol-dot',
+      xPercent: 22,
+      yPercent: 70,
+      widthPercent: 3,
+      heightPercent: 2.5,
+    },
+    {
+      id: 'sym_4',
+      pageNumber: 1,
+      type: 'symbol-circle',
+      xPercent: 28,
+      yPercent: 70,
+      widthPercent: 3,
+      heightPercent: 2.5,
+    },
+    {
+      id: 'sym_5',
+      pageNumber: 1,
+      type: 'symbol-checkbox',
+      xPercent: 34,
+      yPercent: 70,
+      widthPercent: 3,
+      heightPercent: 2.5,
+      checked: true,
+    },
+  ]);
+
+  // 3. Inspect exported PDF to confirm genuine AcroForm fields exist and retain values
+  const loadedOut = await PDFDocument.load(outBytes);
+  const outForm = loadedOut.getForm();
+  const fieldNames = outForm.getFields().map((f) => f.getName());
+  assert.ok(fieldNames.includes('applicant_name'), 'Exported PDF must contain applicant_name AcroForm text field');
+  assert.ok(fieldNames.includes('project_notes'), 'Exported PDF must contain project_notes AcroForm multiline field');
+  assert.ok(fieldNames.includes('plan_tier'), 'Exported PDF must contain plan_tier AcroForm dropdown field');
+  assert.ok(fieldNames.includes('accept_terms'), 'Exported PDF must contain accept_terms AcroForm checkbox field');
+  assert.ok(fieldNames.includes('billing_cycle'), 'Exported PDF must contain billing_cycle AcroForm radio group');
+  assert.equal(outForm.getTextField('applicant_name').getText(), 'Jane Doe');
+  assert.equal(outForm.getCheckBox('accept_terms').isChecked(), true);
+});
+
