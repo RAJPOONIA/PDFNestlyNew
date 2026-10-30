@@ -66,6 +66,11 @@ import {
   ArrowUp,
   ArrowDown,
   ExternalLink,
+  Eraser,
+  SpellCheck,
+  Send,
+  UserCheck,
+  Plus,
 } from 'lucide-react';
 import {
   EditorAnnotationItem,
@@ -79,6 +84,9 @@ import {
   insertBlankPageIntoPdf,
   extractPagesFromPdf,
   detectCandidateFormFields,
+  exportPdfToFormat,
+  convertPdfToImagesBundle,
+  sanitizeOrFlattenPdf,
 } from '@/lib/pdf-engine-client';
 import { generateSamplePdfBytes } from '@/lib/sample-pdf';
 import { formatFileSize, validateFileHeader, toPdfBlob } from '@/lib/pdf-utils';
@@ -97,6 +105,8 @@ export type EditorToolMode =
   | 'strikethrough'
   | 'shape'
   | 'drawing'
+  | 'eraser'
+  | 'spellcheck'
   | 'comment'
   | 'stamp'
   | 'watermark'
@@ -115,6 +125,8 @@ export type EditorToolMode =
   | 'symbol-dot'
   | 'symbol-circle'
   | 'symbol-checkbox';
+
+export type StudioCategory = 'edit' | 'convert' | 'organize' | 'sign' | 'fields' | 'share' | 'secure';
 
 export type ShapeType = 'rectangle' | 'rounded-rect' | 'ellipse' | 'line' | 'arrow';
 
@@ -169,6 +181,24 @@ function getCssFontFamily(fontFamily?: string): string {
   return 'Inter, Helvetica, Arial, sans-serif';
 }
 
+let annotationIdSeq = 1000;
+function createAnnotationId(): string {
+  annotationIdSeq += 1;
+  return `ann_${annotationIdSeq}`;
+}
+
+const STUDIO_STAMPS: Array<{ label: string; colorHex: string; bgHex: string }> = [
+  { label: 'APPROVED', colorHex: '#15803d', bgHex: '#f0fdf4' },
+  { label: 'COPY', colorHex: '#1d4ed8', bgHex: '#eff6ff' },
+  { label: 'DO NOT COPY', colorHex: '#dc2626', bgHex: '#fef2f2' },
+  { label: 'DRAFT', colorHex: '#d97706', bgHex: '#fffbeb' },
+  { label: 'DUE', colorHex: '#dc2626', bgHex: '#fef2f2' },
+  { label: 'ORIGINAL', colorHex: '#1d4ed8', bgHex: '#eff6ff' },
+  { label: 'PAST DUE', colorHex: '#ea580c', bgHex: '#fff7ed' },
+  { label: 'RECEIVED', colorHex: '#15803d', bgHex: '#f0fdf4' },
+  { label: 'SENT', colorHex: '#15803d', bgHex: '#f0fdf4' },
+];
+
 export function PdfEditorWorkspace({
   initialPdfBytes = null,
   initialFileName = 'document.pdf',
@@ -186,12 +216,19 @@ export function PdfEditorWorkspace({
   // UI state
   const [zoomPercent, setZoomPercent] = useState<number>(100);
   const [fitMode, setFitMode] = useState<'page' | 'width' | 'custom'>('page');
+  const [activeCategory, setActiveCategory] = useState<StudioCategory>('edit');
   const [activeTool, setActiveTool] = useState<EditorToolMode>(defaultTool);
   const [activeShapeType, setActiveShapeType] = useState<ShapeType>('rectangle');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
-  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(true);
+  const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
   const [showMoreMenu, setShowMoreMenu] = useState<boolean>(false);
   const [showSignaturePad, setShowSignaturePad] = useState<boolean>(false);
+  const [showStampModal, setShowStampModal] = useState<boolean>(false);
+  const [showImageUploadModal, setShowImageUploadModal] = useState<boolean>(false);
+  const [showShapesMenu, setShowShapesMenu] = useState<boolean>(false);
+  const [showDrawingMenu, setShowDrawingMenu] = useState<boolean>(false);
+  const [showSignChoiceModal, setShowSignChoiceModal] = useState<boolean>(false);
+  const [isConvertingFormat, setIsConvertingFormat] = useState<string | null>(null);
 
   // Unified History state covering annotations + page operations
   const [history, setHistory] = useState<EditorSnapshot[]>([
@@ -231,6 +268,13 @@ export function PdfEditorWorkspace({
   const [resizingId, setResizingId] = useState<string | null>(null);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ dxPct: number; dyPct: number }>({ dxPct: 0, dyPct: 0 });
+  const [drawingBoxDraft, setDrawingBoxDraft] = useState<{
+    tool: EditorToolMode;
+    startX: number;
+    startY: number;
+    curX: number;
+    curY: number;
+  } | null>(null);
 
   // Pan tool state
   const [isPanning, setIsPanning] = useState<boolean>(false);
@@ -262,6 +306,8 @@ export function PdfEditorWorkspace({
   const [showFindBar, setShowFindBar] = useState<boolean>(false);
   const [findQuery, setFindQuery] = useState<string>('');
   const [replaceQuery, setReplaceQuery] = useState<string>('');
+  const [findMatchCase, setFindMatchCase] = useState<boolean>(false);
+  const [findExactMatch, setFindExactMatch] = useState<boolean>(false);
   const [activeMatchIdx, setActiveMatchIdx] = useState<number>(0);
 
   // Confirmation Modal state for Delete / Close
@@ -616,7 +662,7 @@ export function PdfEditorWorkspace({
         return;
       }
       const container = mainContainerRef.current;
-      const availW = Math.max(260, container.clientWidth - 48);
+      const availW = Math.max(260, container.clientWidth - 64);
       const availH = Math.max(260, container.clientHeight - 48);
 
       const scaleW = availW / pageDimensions.width;
@@ -624,10 +670,15 @@ export function PdfEditorWorkspace({
 
       let targetZoom: number;
       if (mode === 'width') {
-        targetZoom = Math.round(Math.max(30, Math.min(200, scaleW * 100)));
+        targetZoom = Math.round(Math.max(40, Math.min(200, scaleW * 92)));
       } else {
-        const fitScale = Math.min(scaleW, scaleH);
-        targetZoom = Math.round(Math.max(30, Math.min(150, fitScale * 100)));
+        // On desktop viewports (>= 900px wide), fill ~76% of the available workspace width like PDFSimpli
+        if (availW >= 780) {
+          targetZoom = Math.round(Math.max(100, Math.min(155, scaleW * 76)));
+        } else {
+          const fitScale = Math.min(scaleW, scaleH);
+          targetZoom = Math.round(Math.max(40, Math.min(150, fitScale * 100)));
+        }
       }
 
       setZoomPercent(targetZoom);
@@ -893,19 +944,14 @@ export function PdfEditorWorkspace({
   };
 
   // Image upload handling for Image Insertion OR Replace Image
-  const handleImageFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const processSelectedImageFile = (file: File) => {
     if (file.size > 25 * 1024 * 1024) {
       setErrorMessage(`Image is too large (${formatFileSize(file.size)}). Maximum supported image size is 25MB.`);
-      e.target.value = '';
       return;
     }
 
     if (!file.type.match(/^image\/(png|jpeg|jpg|webp)$/i) && !file.name.match(/\.(png|jpe?g|webp)$/i)) {
       setErrorMessage('Please select a PNG (transparent supported), JPEG, or WebP image.');
-      e.target.value = '';
       return;
     }
 
@@ -941,22 +987,163 @@ export function PdfEditorWorkspace({
               setStatusMessage(`Replaced image with "${file.name}".`);
             }
             setReplacingImageTargetId(null);
+            setShowImageUploadModal(false);
             return;
           }
 
           setPendingImageUrl(normalizedPng);
           setPendingImageSize({ width: img.naturalWidth, height: img.naturalHeight });
-          setStatusMessage(
-            `Image "${file.name}" ready (${img.naturalWidth}×${img.naturalHeight}px). Click on the PDF page or use "Place at Center".`
-          );
-          setActiveTool('image');
-          setIsInspectorOpen(true);
+          setShowImageUploadModal(false);
+
+          if (pdfBytes) {
+            const aspect = img.naturalWidth / Math.max(1, img.naturalHeight);
+            const widthPct = 28;
+            const pageAspect = pageDimensions.width / Math.max(1, pageDimensions.height);
+            const heightPct = Math.min(50, Math.max(5, (widthPct / aspect) * pageAspect));
+            const newId = `img_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+            const newItem: EditorAnnotationItem = {
+              id: newId,
+              pageNumber: activePage,
+              type: 'image',
+              xPercent: roundPct(50 - widthPct / 2),
+              yPercent: roundPct(38 - heightPct / 2),
+              widthPercent: roundPct(widthPct),
+              heightPercent: roundPct(heightPct),
+              imageDataUrl: normalizedPng,
+              aspectRatioLocked: true,
+              opacity: 1,
+              rotationDeg: 0,
+            };
+            pushAnnotationsState([...annotations, newItem]);
+            setSelectedId(newId);
+            setActiveTool('select');
+            setStatusMessage(`Placed image "${file.name}" on Page ${activePage}. Drag to move or use handles to resize.`);
+          } else {
+            setStatusMessage(`Image "${file.name}" ready.`);
+          }
         }
       };
       img.src = reader.result as string;
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleImageFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processSelectedImageFile(file);
+    }
     e.target.value = '';
+  };
+
+  // Place a stamp chosen from the "Select stamp" modal onto the active page
+  const handlePlaceStampFromModal = (stampLabel: string, stampColorHex: string) => {
+    setStampPreset(stampLabel);
+    setShowStampModal(false);
+    if (!pdfBytes) return;
+    const newId = createAnnotationId();
+    const existingStamps = annotations.filter((a) => a.pageNumber === activePage && a.type === 'stamp').length;
+    const offset = (existingStamps % 5) * 3;
+    const newItem: EditorAnnotationItem = {
+      id: newId,
+      pageNumber: activePage,
+      type: 'stamp',
+      xPercent: roundPct(38 + offset),
+      yPercent: roundPct(26 + offset),
+      widthPercent: 24,
+      heightPercent: 6.5,
+      stampLabel,
+      fontSize: 14,
+      colorHex: stampColorHex,
+      opacity: 0.95,
+    };
+    pushAnnotationsState([...annotations, newItem]);
+    setSelectedId(newId);
+    setActiveTool('select');
+    setStatusMessage(`Placed "${stampLabel}" stamp on Page ${activePage}.`);
+  };
+
+  // Layer ordering for selected annotation (Bring Forward / Send Backward)
+  const handleLayerOrderSelected = (direction: 'forward' | 'backward') => {
+    if (!selectedId) return;
+    const idx = annotations.findIndex((a) => a.id === selectedId);
+    if (idx === -1) return;
+    const nextList = [...annotations];
+    const [target] = nextList.splice(idx, 1);
+    if (direction === 'forward') {
+      nextList.push(target);
+    } else {
+      nextList.unshift(target);
+    }
+    pushAnnotationsState(nextList);
+    setStatusMessage(direction === 'forward' ? 'Brought object to front.' : 'Sent object to back.');
+  };
+
+  // Convert current edited PDF to Word, Excel, PPT/HTML, JPG, PNG, or TXT directly from the Convert tab
+  const handleConvertCurrentPdf = async (format: 'docx' | 'xlsx' | 'html' | 'jpg' | 'png' | 'txt') => {
+    if (!pdfBytes || isConvertingFormat) return;
+    setIsConvertingFormat(format);
+    setErrorMessage('');
+    try {
+      const currentEditedBytes = await applyEditorAnnotationsToPdf(pdfBytes, annotations, {
+        extraRotations,
+        deletedPages,
+        pageCrops,
+        pageSequence: pageSequence.length > 0 ? pageSequence : undefined,
+      });
+      const baseName = fileName.replace(/\.pdf$/i, '') || 'document';
+      if (format === 'jpg' || format === 'png') {
+        const res = await convertPdfToImagesBundle(currentEditedBytes, format, 2.0, baseName);
+        const url = URL.createObjectURL(res.zipBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${baseName}-${format}-images.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setStatusMessage(`Converted and downloaded ${res.images.length} page(s) as ${format.toUpperCase()} archive.`);
+      } else {
+        const res = await exportPdfToFormat(currentEditedBytes, format, baseName);
+        const url = URL.createObjectURL(res.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = res.fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setStatusMessage(`Converted and downloaded "${res.fileName}".`);
+      }
+    } catch (err) {
+      setErrorMessage(`Conversion failed: ${(err as Error).message}`);
+    } finally {
+      setIsConvertingFormat(null);
+    }
+  };
+
+  // Flatten & sanitize current PDF inside Studio
+  const handleFlattenCurrentPdf = async () => {
+    if (!pdfBytes) return;
+    setIsLoading(true);
+    try {
+      const currentEditedBytes = await applyEditorAnnotationsToPdf(pdfBytes, annotations, {
+        extraRotations,
+        deletedPages,
+        pageCrops,
+        pageSequence: pageSequence.length > 0 ? pageSequence : undefined,
+      });
+      const flattened = await sanitizeOrFlattenPdf(currentEditedBytes, {
+        flattenForms: true,
+        stripAnnotations: false,
+        stripMetadata: false,
+      });
+      setPdfBytes(flattened);
+      resetEditorHistory();
+      setStatusMessage('Flattened all annotations and form fields into the PDF page content.');
+    } catch (err) {
+      setErrorMessage('Failed to flatten PDF: ' + (err as Error).message);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Quick place image at center of active page
@@ -1213,13 +1400,21 @@ export function PdfEditorWorkspace({
   const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
     setShowFormsMenu(false);
     setShowMoreMenu(false);
+    setShowShapesMenu(false);
+    setShowDrawingMenu(false);
 
     if (editingId) {
       setEditingId(null);
       setEditInitialText(null);
     }
 
-    if (activeTool === 'select' || activeTool === 'existing-text' || activeTool === 'pan' || activeTool === 'crop') {
+    if (
+      activeTool === 'select' ||
+      activeTool === 'existing-text' ||
+      activeTool === 'spellcheck' ||
+      activeTool === 'pan' ||
+      activeTool === 'crop'
+    ) {
       if (e.target === e.currentTarget || (e.target as HTMLElement).dataset.canvasBg === 'true') {
         setSelectedId(null);
         setSelectedTextLine(null);
@@ -1227,6 +1422,18 @@ export function PdfEditorWorkspace({
       return;
     }
     if (!pdfBytes) return;
+
+    // If a click-and-drag box was just completed in handleCanvasMouseUp, skip duplicate click placement
+    if (
+      activeTool === 'redact' ||
+      activeTool === 'eraser' ||
+      activeTool === 'highlight' ||
+      activeTool === 'underline' ||
+      activeTool === 'strikethrough' ||
+      activeTool === 'shape'
+    ) {
+      return;
+    }
 
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
@@ -1270,58 +1477,6 @@ export function PdfEditorWorkspace({
       }
       setStatusMessage('Added text box. Type directly on the canvas.');
       return;
-    } else if (activeTool === 'highlight') {
-      newItem = {
-        id: newId,
-        pageNumber: activePage,
-        type: 'highlight',
-        xPercent,
-        yPercent,
-        widthPercent: 28,
-        heightPercent: 3.5,
-        colorHex: '#facc15',
-        opacity: 0.4,
-      };
-    } else if (activeTool === 'underline') {
-      newItem = {
-        id: newId,
-        pageNumber: activePage,
-        type: 'underline',
-        xPercent,
-        yPercent,
-        widthPercent: 25,
-        heightPercent: 2.2,
-        colorHex: '#dc2626',
-        strokeWidth: 2,
-        opacity: 1,
-      };
-    } else if (activeTool === 'strikethrough') {
-      newItem = {
-        id: newId,
-        pageNumber: activePage,
-        type: 'strikethrough',
-        xPercent,
-        yPercent,
-        widthPercent: 25,
-        heightPercent: 2.2,
-        colorHex: '#dc2626',
-        strokeWidth: 2,
-        opacity: 1,
-      };
-    } else if (activeTool === 'shape') {
-      newItem = {
-        id: newId,
-        pageNumber: activePage,
-        type: activeShapeType,
-        xPercent,
-        yPercent,
-        widthPercent: 20,
-        heightPercent: activeShapeType === 'line' || activeShapeType === 'arrow' ? 2 : 12,
-        colorHex: '#dc2626',
-        fillHex: '',
-        strokeWidth: 2,
-        opacity: 1,
-      };
     } else if (activeTool === 'comment') {
       newItem = {
         id: newId,
@@ -1339,6 +1494,7 @@ export function PdfEditorWorkspace({
         opacity: 0.95,
       };
     } else if (activeTool === 'stamp') {
+      const matchedPreset = STUDIO_STAMPS.find((s) => s.label === stampPreset);
       newItem = {
         id: newId,
         pageNumber: activePage,
@@ -1349,13 +1505,9 @@ export function PdfEditorWorkspace({
         heightPercent: 6,
         stampLabel: stampPreset,
         fontSize: 14,
-        colorHex:
-          stampPreset === 'REJECTED' || stampPreset === 'CONFIDENTIAL'
-            ? '#dc2626'
-            : stampPreset === 'APPROVED' || stampPreset === 'COMPLETED'
-              ? '#16a34a'
-              : '#2563eb',
-        opacity: 0.9,
+        colorHex: matchedPreset ? matchedPreset.colorHex : '#16a34a',
+        fillHex: matchedPreset ? matchedPreset.bgHex : '#f0fdf4',
+        opacity: 0.95,
       };
     } else if (activeTool === 'watermark') {
       newItem = {
@@ -1370,18 +1522,6 @@ export function PdfEditorWorkspace({
         fontSize: 38,
         colorHex: '#94a3b8',
         opacity: 0.25,
-      };
-    } else if (activeTool === 'redact') {
-      newItem = {
-        id: newId,
-        pageNumber: activePage,
-        type: 'redact',
-        xPercent,
-        yPercent,
-        widthPercent: 25,
-        heightPercent: 4,
-        colorHex: '#000000',
-        opacity: 1,
       };
     } else if (activeTool === 'signature') {
       if (!pendingImageUrl) {
@@ -1409,7 +1549,8 @@ export function PdfEditorWorkspace({
       };
     } else if (activeTool === 'image') {
       if (!pendingImageUrl) {
-        imageInputRef.current?.click();
+        setReplacingImageTargetId(null);
+        setShowImageUploadModal(true);
         return;
       }
       const aspect = pendingImageSize.width / Math.max(1, pendingImageSize.height);
@@ -1578,11 +1719,7 @@ export function PdfEditorWorkspace({
     if (!keepToolActive) {
       setActiveTool('select');
     }
-    setStatusMessage(
-      `Placed ${newItem.type} on Page ${activePage}.${
-        keepToolActive ? ' ("Keep Tool Active" is ON — click again to place another.)' : ' Switched back to Select mode.'
-      }`
-    );
+    setStatusMessage(`Placed ${newItem.type} on Page ${activePage}.`);
   };
 
   // Start dragging an annotation on the canvas
@@ -1673,6 +1810,19 @@ export function PdfEditorWorkspace({
     const rect = canvasRef.current.getBoundingClientRect();
     const mouseXPct = ((e.clientX - rect.left) / rect.width) * 100;
     const mouseYPct = ((e.clientY - rect.top) / rect.height) * 100;
+
+    if (drawingBoxDraft) {
+      setDrawingBoxDraft((prev) =>
+        prev
+          ? {
+              ...prev,
+              curX: Math.max(0, Math.min(100, mouseXPct)),
+              curY: Math.max(0, Math.min(100, mouseYPct)),
+            }
+          : null
+      );
+      return;
+    }
 
     if (isDrawingFreehand && activeTool === 'drawing') {
       const clampedX = Math.max(0, Math.min(100, mouseXPct));
@@ -1805,16 +1955,151 @@ export function PdfEditorWorkspace({
   };
 
   const handleFreehandMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (activeTool !== 'drawing' || !canvasRef.current) return;
-    e.stopPropagation();
-    const rect = canvasRef.current.getBoundingClientRect();
-    const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
-    const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
-    setIsDrawingFreehand(true);
-    setFreehandPoints([{ xPct, yPct }]);
+    if (!canvasRef.current) return;
+    if (activeTool === 'drawing') {
+      e.stopPropagation();
+      const rect = canvasRef.current.getBoundingClientRect();
+      const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+      const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+      setIsDrawingFreehand(true);
+      setFreehandPoints([{ xPct, yPct }]);
+      return;
+    }
+
+    if (
+      activeTool === 'redact' ||
+      activeTool === 'eraser' ||
+      activeTool === 'highlight' ||
+      activeTool === 'underline' ||
+      activeTool === 'strikethrough' ||
+      activeTool === 'shape'
+    ) {
+      e.stopPropagation();
+      const rect = canvasRef.current.getBoundingClientRect();
+      const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+      const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+      setDrawingBoxDraft({
+        tool: activeTool,
+        startX: xPct,
+        startY: yPct,
+        curX: xPct,
+        curY: yPct,
+      });
+    }
   };
 
   const handleCanvasMouseUp = () => {
+    if (drawingBoxDraft && pdfBytes) {
+      const d = drawingBoxDraft;
+      setDrawingBoxDraft(null);
+      const minX = Math.min(d.startX, d.curX);
+      const minY = Math.min(d.startY, d.curY);
+      const rawW = Math.abs(d.curX - d.startX);
+      const rawH = Math.abs(d.curY - d.startY);
+      const isDrag = rawW >= 1.5 || rawH >= 1.2;
+
+      const xPercent = roundPct(Math.max(0, Math.min(95, minX)));
+      const yPercent = roundPct(Math.max(0, Math.min(95, minY)));
+      const newId = `box_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      let newItem: EditorAnnotationItem | null = null;
+
+      if (d.tool === 'redact') {
+        newItem = {
+          id: newId,
+          pageNumber: activePage,
+          type: 'redact',
+          xPercent,
+          yPercent,
+          widthPercent: isDrag ? roundPct(Math.max(3, rawW)) : 24,
+          heightPercent: isDrag ? roundPct(Math.max(2, rawH)) : 4,
+          colorHex: '#000000',
+          opacity: 1,
+        };
+      } else if (d.tool === 'eraser') {
+        newItem = {
+          id: newId,
+          pageNumber: activePage,
+          type: 'redact',
+          xPercent,
+          yPercent,
+          widthPercent: isDrag ? roundPct(Math.max(3, rawW)) : 24,
+          heightPercent: isDrag ? roundPct(Math.max(2.2, rawH)) : 4.5,
+          colorHex: '#ffffff',
+          opacity: 1,
+        };
+      } else if (d.tool === 'highlight') {
+        newItem = {
+          id: newId,
+          pageNumber: activePage,
+          type: 'highlight',
+          xPercent,
+          yPercent,
+          widthPercent: isDrag ? roundPct(Math.max(4, rawW)) : 26,
+          heightPercent: isDrag ? roundPct(Math.max(1.8, rawH)) : 3.2,
+          colorHex: '#facc15',
+          opacity: 0.4,
+        };
+      } else if (d.tool === 'underline') {
+        newItem = {
+          id: newId,
+          pageNumber: activePage,
+          type: 'underline',
+          xPercent,
+          yPercent,
+          widthPercent: isDrag ? roundPct(Math.max(4, rawW)) : 25,
+          heightPercent: isDrag ? roundPct(Math.max(1.5, rawH)) : 2.2,
+          colorHex: '#0f172a',
+          strokeWidth: 2,
+          opacity: 1,
+        };
+      } else if (d.tool === 'strikethrough') {
+        newItem = {
+          id: newId,
+          pageNumber: activePage,
+          type: 'strikethrough',
+          xPercent,
+          yPercent,
+          widthPercent: isDrag ? roundPct(Math.max(4, rawW)) : 25,
+          heightPercent: isDrag ? roundPct(Math.max(1.5, rawH)) : 2.2,
+          colorHex: '#0f172a',
+          strokeWidth: 2,
+          opacity: 1,
+        };
+      } else if (d.tool === 'shape') {
+        newItem = {
+          id: newId,
+          pageNumber: activePage,
+          type: activeShapeType,
+          xPercent,
+          yPercent,
+          widthPercent: isDrag ? roundPct(Math.max(4, rawW)) : 20,
+          heightPercent:
+            activeShapeType === 'line' || activeShapeType === 'arrow'
+              ? 2
+              : isDrag
+                ? roundPct(Math.max(3, rawH))
+                : 12,
+          colorHex: '#0f172a',
+          fillHex: '',
+          strokeWidth: 2,
+          opacity: 1,
+        };
+      }
+
+      if (newItem) {
+        pushAnnotationsState([...annotations, newItem]);
+        setSelectedId(newId);
+        if (!keepToolActive && d.tool !== 'eraser') {
+          setActiveTool('select');
+        }
+        setStatusMessage(
+          d.tool === 'eraser'
+            ? `Erased area on Page ${activePage}. Drag to adjust or click trash icon to remove.`
+            : `Placed ${d.tool} on Page ${activePage}.`
+        );
+      }
+    }
+
     if (isDrawingFreehand && activeTool === 'drawing') {
       setIsDrawingFreehand(false);
       if (freehandPoints.length >= 2 && pageDimensions.width > 0 && pageDimensions.height > 0) {
@@ -2041,14 +2326,23 @@ export function PdfEditorWorkspace({
     setStatusMessage(`Removed Page ${pageNum} from export.`);
   };
 
-  // Find & Replace matching logic
+  // Find & Replace matching logic (with Match case & Exact match support)
   const findMatches = React.useMemo(() => {
-    const q = findQuery.trim().toLowerCase();
-    if (!q) return [];
+    const rawQ = findQuery.trim();
+    if (!rawQ) return [];
+    const escaped = rawQ.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = findExactMatch ? `\\b${escaped}\\b` : escaped;
+    const flags = findMatchCase ? '' : 'i';
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern, flags);
+    } catch {
+      return [];
+    }
     return detectedLines.filter(
-      (line) => !deletedPages.includes(line.pageNumber) && line.text.toLowerCase().includes(q)
+      (line) => !deletedPages.includes(line.pageNumber) && regex.test(line.text)
     );
-  }, [findQuery, detectedLines, deletedPages]);
+  }, [findQuery, findMatchCase, findExactMatch, detectedLines, deletedPages]);
 
   const handleJumpToMatch = (idx: number) => {
     if (findMatches.length === 0) return;
@@ -2066,7 +2360,9 @@ export function PdfEditorWorkspace({
     const match = findMatches[activeMatchIdx] || findMatches[0];
     if (!match) return;
 
-    const regex = new RegExp(findQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const escaped = findQuery.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = findExactMatch ? `\\b${escaped}\\b` : escaped;
+    const regex = new RegExp(pattern, findMatchCase ? 'g' : 'gi');
     const existingAnnot = annotations.find(
       (a) =>
         a.pageNumber === match.pageNumber &&
@@ -2118,7 +2414,9 @@ export function PdfEditorWorkspace({
 
   const handleReplaceAllMatches = () => {
     if (findMatches.length === 0) return;
-    const regex = new RegExp(findQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const escaped = findQuery.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = findExactMatch ? `\\b${escaped}\\b` : escaped;
+    const regex = new RegExp(pattern, findMatchCase ? 'g' : 'gi');
     const nextList = [...annotations];
 
     findMatches.forEach((match, idx) => {
@@ -2313,7 +2611,7 @@ export function PdfEditorWorkspace({
   return (
     <div
       data-testid="pdf-editor-standalone-app"
-      className="flex flex-col h-screen w-full bg-slate-950 text-slate-100 overflow-hidden select-none"
+      className="flex flex-col h-screen w-full bg-[#F1F5F9] text-slate-900 overflow-hidden select-none"
       onMouseUp={handleCanvasMouseUp}
     >
       {/* Hidden File Inputs */}
@@ -2332,124 +2630,106 @@ export function PdfEditorWorkspace({
         onChange={handleImageFileSelect}
       />
 
-      {/* TIER 1: STANDALONE STUDIO APPLICATION HEADER */}
+      {/* TIER 1: CLEAN WHITE STUDIO APPLICATION HEADER */}
       <header
         data-testid="studio-app-header"
-        className="bg-slate-950 border-b border-slate-800/90 px-4 py-2 flex items-center justify-between gap-3 shrink-0 z-40"
+        className="bg-white border-b border-slate-200 px-4 h-14 flex items-center justify-between gap-3 shrink-0 z-40"
       >
-        {/* Left: PDFNestly Studio Logo/Name, Document Filename, Page Count & Save Status */}
+        {/* Left: PDFNestly Brand + Active Document Info */}
         <div className="flex items-center gap-3 min-w-0">
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 shrink-0">
-            <PdfNestlyMark className="w-5 h-5 rounded" />
-            <span className="font-bold text-xs tracking-tight text-white">PDFNestly Studio</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <PdfNestlyMark className="w-7 h-7 rounded-md shadow-xs" />
+            <span className="font-extrabold text-xl tracking-tight text-slate-900">
+              pdf<span className="font-semibold text-slate-700">nestly</span>
+            </span>
           </div>
 
           {pdfBytes && (
-            <div className="flex items-center gap-2.5 min-w-0 bg-slate-900/90 border border-slate-800/80 px-3 py-1 rounded-lg">
-              <FileText className="w-3.5 h-3.5 text-red-400 shrink-0" />
+            <div className="hidden sm:flex items-center gap-2 min-w-0 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg ml-2">
+              <FileText className="w-3.5 h-3.5 text-red-600 shrink-0" />
               <span
                 data-testid="studio-document-filename"
-                className="text-xs font-semibold text-white truncate max-w-[160px] md:max-w-[260px]"
+                className="text-xs font-semibold text-slate-800 truncate max-w-[160px] md:max-w-[240px]"
                 title={fileName}
               >
                 {fileName}
               </span>
               <span
                 data-testid="studio-document-page-count"
-                className="text-[11px] font-medium text-slate-400 shrink-0 border-l border-slate-800 pl-2"
+                className="text-[11px] font-medium text-slate-500 shrink-0 border-l border-slate-200 pl-2"
               >
                 {visibleThumbnails.length} {visibleThumbnails.length === 1 ? 'Page' : 'Pages'}
               </span>
 
-              {/* Honest Save Status Badge */}
               {hasUnsavedChanges ? (
                 <span
                   data-testid="save-status-badge"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 shrink-0"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
                   Unsaved edits
                 </span>
               ) : exportedIdx === historyIdx && historyIdx > 0 ? (
                 <span
                   data-testid="save-status-badge"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 shrink-0"
                 >
-                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                  Exported
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                  Saved
                 </span>
               ) : savedIdx === historyIdx && historyIdx > 0 ? (
                 <span
                   data-testid="save-status-badge"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-500/15 text-sky-300 border border-sky-500/30 shrink-0"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-sky-50 text-sky-700 border border-sky-200 shrink-0"
                 >
-                  <CheckCircle2 className="w-3 h-3 text-sky-400" />
+                  <CheckCircle2 className="w-3 h-3 text-sky-600" />
                   Saved in workspace
                 </span>
               ) : (
                 <span
                   data-testid="save-status-badge"
-                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 shrink-0"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-100 text-slate-600 shrink-0"
                 >
-                  Original PDF
+                  Ready
                 </span>
               )}
             </div>
           )}
         </div>
 
-        {/* Right: Undo, Redo, Fullscreen, Save, More Document Actions, Export PDF */}
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Undo / Redo */}
-          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+        {/* Right: Undo | Redo, Fullscreen, More Menu, and Prominent Pill SAVE & NEXT Button */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center text-slate-500">
             <button
               type="button"
               onClick={handleUndo}
               disabled={historyIdx <= 0}
-              className="p-1.5 text-slate-300 hover:text-white disabled:opacity-30 transition-colors"
+              className="p-2 hover:text-slate-900 hover:bg-slate-100 rounded-lg disabled:opacity-30 transition-colors"
               title="Undo (Ctrl+Z)"
             >
-              <Undo2 className="w-3.5 h-3.5" />
+              <Undo2 className="w-4 h-4" />
             </button>
+            <div className="h-4 w-px bg-slate-200 mx-0.5" />
             <button
               type="button"
               onClick={handleRedo}
               disabled={historyIdx >= history.length - 1}
-              className="p-1.5 text-slate-300 hover:text-white disabled:opacity-30 transition-colors"
+              className="p-2 hover:text-slate-900 hover:bg-slate-100 rounded-lg disabled:opacity-30 transition-colors"
               title="Redo (Ctrl+Y)"
             >
-              <Redo2 className="w-3.5 h-3.5" />
+              <Redo2 className="w-4 h-4" />
             </button>
           </div>
 
-          {/* Fullscreen Toggle Button */}
           <button
             type="button"
             data-testid="studio-fullscreen-button"
             onClick={handleToggleFullscreen}
-            className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-colors"
+            className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
             title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
           >
-            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+            {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
-
-          {/* Save to Workspace button */}
-          {pdfBytes && (
-            <button
-              type="button"
-              onClick={handleSaveToWorkspace}
-              disabled={isSavingWorkspace || !hasUnsavedChanges}
-              className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                hasUnsavedChanges
-                  ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700'
-                  : 'bg-slate-900 text-slate-500 border-slate-800 cursor-default'
-              }`}
-              title="Save current edits in browser workspace"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{isSavingWorkspace ? 'Saving...' : 'Save'}</span>
-            </button>
-          )}
 
           {/* More Document Actions Dropdown */}
           <div className="relative">
@@ -2457,14 +2737,14 @@ export function PdfEditorWorkspace({
               type="button"
               data-testid="studio-more-actions-button"
               onClick={() => setShowMoreMenu((prev) => !prev)}
-              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-colors"
+              className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors"
               title="More Document Actions"
             >
               <MoreVertical className="w-4 h-4" />
             </button>
             {showMoreMenu && (
               <div
-                className="absolute right-0 mt-1.5 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 z-50 text-xs"
+                className="absolute right-0 mt-1.5 w-56 bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 z-50 text-xs text-slate-700"
                 onMouseLeave={() => setShowMoreMenu(false)}
               >
                 <button
@@ -2473,10 +2753,22 @@ export function PdfEditorWorkspace({
                     setShowMoreMenu(false);
                     fileInputRef.current?.click();
                   }}
-                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5"
                 >
-                  <Upload className="w-3.5 h-3.5 text-slate-400" />
+                  <Upload className="w-3.5 h-3.5 text-slate-500" />
                   Replace PDF Document
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    handleSaveToWorkspace();
+                  }}
+                  disabled={!pdfBytes || isSavingWorkspace}
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 disabled:opacity-40"
+                >
+                  <Save className="w-3.5 h-3.5 text-sky-600" />
+                  {isSavingWorkspace ? 'Saving...' : 'Save in Browser Workspace'}
                 </button>
                 <button
                   type="button"
@@ -2484,9 +2776,9 @@ export function PdfEditorWorkspace({
                     setShowMoreMenu(false);
                     handleLoadSample();
                   }}
-                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                   Load 4-Page Sample PDF
                 </button>
                 <button
@@ -2495,23 +2787,23 @@ export function PdfEditorWorkspace({
                     setShowMoreMenu(false);
                     setActiveTool('watermark');
                   }}
-                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5"
                 >
-                  <Layers className="w-3.5 h-3.5 text-sky-400" />
+                  <Layers className="w-3.5 h-3.5 text-sky-500" />
                   Add Page Watermark
                 </button>
                 {pdfBytes && (
                   <>
-                    <div className="my-1 border-t border-slate-800" />
+                    <div className="my-1 border-t border-slate-100" />
                     <button
                       type="button"
                       onClick={() => {
                         setShowMoreMenu(false);
                         handleInsertBlankPageAfter(activePage);
                       }}
-                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5"
                     >
-                      <FilePlus2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <FilePlus2 className="w-3.5 h-3.5 text-emerald-600" />
                       Insert Blank Page After P.{activePage}
                     </button>
                     <button
@@ -2520,9 +2812,9 @@ export function PdfEditorWorkspace({
                         setShowMoreMenu(false);
                         handleExtractSinglePage(activePage);
                       }}
-                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5"
                     >
-                      <Scissors className="w-3.5 h-3.5 text-purple-400" />
+                      <Scissors className="w-3.5 h-3.5 text-purple-600" />
                       Extract Page {activePage} as PDF
                     </button>
                     <button
@@ -2531,9 +2823,9 @@ export function PdfEditorWorkspace({
                         setShowMoreMenu(false);
                         handleRotateCurrentPage(activePage);
                       }}
-                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5"
                     >
-                      <RotateCw className="w-3.5 h-3.5 text-slate-400" />
+                      <RotateCw className="w-3.5 h-3.5 text-slate-500" />
                       Rotate Current Page (+90°)
                     </button>
                     <button
@@ -2542,7 +2834,7 @@ export function PdfEditorWorkspace({
                         setShowMoreMenu(false);
                         handleRequestDeletePage(activePage);
                       }}
-                      className="w-full px-3.5 py-2 text-left text-red-400 hover:bg-slate-800 flex items-center gap-2.5"
+                      className="w-full px-3.5 py-2 text-left text-red-600 hover:bg-red-50 flex items-center gap-2.5"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       {visibleThumbnails.length <= 1 ? 'Close / Clear Document' : 'Delete Current Page'}
@@ -2553,277 +2845,733 @@ export function PdfEditorWorkspace({
             )}
           </div>
 
-          {/* Primary Export PDF Button */}
+          {/* Primary Pill CTA Button (✓ SAVE & NEXT / ✓ CONVERT / ✓ SIGN) */}
           <button
             type="button"
             data-testid="studio-export-pdf-button"
             onClick={handleExportPdf}
-            disabled={!pdfBytes || isExporting}
-            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-xs font-bold text-white transition-colors shadow-sm"
+            disabled={!pdfBytes || isExporting || Boolean(isConvertingFormat)}
+            className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-full bg-[#F45B2A] hover:bg-[#E04819] disabled:opacity-40 text-xs font-extrabold uppercase tracking-wide text-white transition-all shadow-md"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>{isExporting ? 'Exporting...' : 'Export PDF'}</span>
+            <Check className="w-4 h-4 stroke-[2.75]" />
+            <span>
+              {isExporting
+                ? 'SAVING...'
+                : isConvertingFormat
+                  ? 'CONVERTING...'
+                  : activeCategory === 'convert'
+                    ? 'CONVERT'
+                    : activeCategory === 'sign'
+                      ? 'SIGN'
+                      : 'SAVE & NEXT'}
+            </span>
           </button>
         </div>
       </header>
 
-      {/* TIER 2: STICKY EDITING TOOLBAR */}
+      {/* TIER 2: CONTEXTUAL HORIZONTAL TOOL BAR (STACKED ICON + LABEL) */}
       <div
         data-testid="studio-editing-toolbar"
-        className="bg-slate-900/95 border-b border-slate-800 px-3 py-1 flex items-center justify-between gap-1 shrink-0 z-30"
+        className="bg-white border-b border-slate-200 px-3 min-h-[58px] flex items-center justify-between gap-2 shrink-0 z-30 shadow-2xs"
       >
-        {/* Left / Center: Editing Tools + Forms Dropdown + Keep Active */}
-        <div className="flex items-center gap-0.5 py-0.5 flex-nowrap">
-          {[
-            { id: 'select', label: 'Pointer', icon: MousePointer, hint: 'Select / Pointer: Click any text on canvas to edit in-place, or drag objects' },
-            { id: 'pan', label: 'Hand', icon: Hand, hint: 'Hand / Pan around zoomed page' },
-            { id: 'existing-text', label: 'Edit Text', icon: RefreshCw, hint: 'Highlight & edit existing PDF text in-place' },
-            { id: 'text', label: 'Add Text', icon: Type, hint: 'Click anywhere on page to insert new text' },
-            { id: 'highlight', label: 'Highlight', icon: Highlighter, hint: 'Highlight text or area' },
-            { id: 'underline', label: 'Underline', icon: UnderlineIcon, hint: 'Underline text' },
-            { id: 'strikethrough', label: 'Strikeout', icon: StrikethroughIcon, hint: 'Strikethrough text' },
-            { id: 'shape', label: 'Shapes', icon: Square, hint: 'Draw rectangles, ellipses, lines, or arrows' },
-            { id: 'drawing', label: 'Drawing', icon: Pencil, hint: 'Freehand drawing tool on page' },
-            { id: 'image', label: 'Image', icon: ImageIcon, hint: 'Insert PNG, JPG, or WebP image' },
-            { id: 'signature', label: 'Sign', icon: PenTool, hint: 'Draw, type, or upload signature' },
-            { id: 'crop', label: 'Crop', icon: Crop, hint: 'Drag crop handles on canvas to crop page' },
-            { id: 'comment', label: 'Note', icon: MessageSquare, hint: 'Add sticky note' },
-            { id: 'stamp', label: 'Stamp', icon: Stamp, hint: 'Place status stamp' },
-            { id: 'redact', label: 'Whiteout', icon: ShieldAlert, hint: 'Blackout / whiteout sensitive area' },
-          ].map((tool) => {
-            const Icon = tool.icon;
-            const active = activeTool === tool.id;
-            return (
+        {/* Center Stacked Tool Buttons */}
+        <div className="flex-1 flex items-center justify-center gap-0.5 py-1 flex-nowrap whitespace-nowrap">
+          {activeCategory === 'convert' ? (
+            <>
+              <span className="text-xs font-bold text-slate-500 mr-2">Convert Active PDF To:</span>
+              {[
+                { id: 'docx', label: 'Word (.docx)', icon: FileText },
+                { id: 'xlsx', label: 'Excel (.xlsx)', icon: Layers },
+                { id: 'html', label: 'HTML Document', icon: Sparkles },
+                { id: 'jpg', label: 'JPG Images', icon: ImageIcon },
+                { id: 'png', label: 'PNG Images', icon: ImageIcon },
+                { id: 'txt', label: 'Plain Text', icon: Type },
+              ].map((fmt) => {
+                const FIcon = fmt.icon;
+                return (
+                  <button
+                    key={fmt.id}
+                    type="button"
+                    disabled={!pdfBytes || Boolean(isConvertingFormat)}
+                    onClick={() =>
+                      handleConvertCurrentPdf(fmt.id as 'docx' | 'xlsx' | 'html' | 'txt' | 'jpg' | 'png')
+                    }
+                    className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 transition-colors"
+                  >
+                    <FIcon className="w-4 h-4 text-slate-700" />
+                    <span>{fmt.label}</span>
+                  </button>
+                );
+              })}
+            </>
+          ) : activeCategory === 'organize' ? (
+            <>
               <button
-                key={tool.id}
                 type="button"
-                data-testid={`studio-tool-${tool.id}`}
-                title={tool.hint}
+                disabled={!pdfBytes}
+                onClick={() => handleRotateCurrentPage(activePage)}
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <RotateCw className="w-4 h-4" />
+                <span>Rotate +90°</span>
+              </button>
+              <button
+                type="button"
+                disabled={!pdfBytes}
+                onClick={() => handleInsertBlankPageAfter(activePage)}
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <FilePlus2 className="w-4 h-4" />
+                <span>Add Blank Page</span>
+              </button>
+              <button
+                type="button"
+                disabled={!pdfBytes}
                 onClick={() => {
-                  setEditingId(null);
-                  setShowFormsMenu(false);
-                  setActiveTool(tool.id as EditorToolMode);
-                  if (tool.id === 'signature') {
-                    setSigningFormFieldId(null);
-                    setReplacingSignatureTargetId(null);
-                    setShowSignaturePad(true);
-                  } else if (tool.id === 'image' && !pendingImageUrl) {
-                    setReplacingImageTargetId(null);
-                    imageInputRef.current?.click();
-                  }
+                  const seqIdx = Math.max(0, pageSequence.indexOf(activePage));
+                  handleDuplicatePage(seqIdx, activePage);
                 }}
-                className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[10.5px] font-semibold transition-all shrink-0 whitespace-nowrap ${
-                  active
-                    ? 'bg-red-600 text-white shadow-sm'
-                    : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <Copy className="w-4 h-4" />
+                <span>Duplicate Page</span>
+              </button>
+              <button
+                type="button"
+                disabled={!pdfBytes}
+                onClick={() => handleExtractSinglePage(activePage)}
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <Scissors className="w-4 h-4" />
+                <span>Extract Page</span>
+              </button>
+              <button
+                type="button"
+                disabled={!pdfBytes}
+                onClick={() => setActiveTool('crop')}
+                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium ${
+                  activeTool === 'crop' ? 'bg-[#1E293B] text-white' : 'text-slate-700 hover:bg-slate-100'
                 }`}
               >
-                <Icon className="w-3 h-3 shrink-0" />
-                <span className="hidden xl:inline">{tool.label}</span>
+                <Crop className="w-4 h-4" />
+                <span>Crop Page</span>
               </button>
-            );
-          })}
-
-          {/* SEJDA-STYLE FORMS & SYMBOLS MENU */}
-          <div className="relative shrink-0">
-            <button
-              type="button"
-              data-testid="forms-menu-button"
-              onClick={() => setShowFormsMenu((prev) => !prev)}
-              className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[10.5px] font-semibold transition-all shrink-0 border whitespace-nowrap ${
-                activeTool.startsWith('form-') || activeTool.startsWith('symbol-') || showFormsMenu
-                  ? 'bg-red-600 text-white border-red-500 shadow-sm'
-                  : 'bg-slate-950 text-slate-200 border-slate-800 hover:bg-slate-800 hover:text-white'
-              }`}
-              title="Interactive PDF Forms, Checkmarks & Fillable Fields"
-            >
-              <CheckSquare className="w-3.5 h-3.5" />
-              <span>Forms</span>
-              <ChevronDown className="w-3 h-3 opacity-80" />
-            </button>
-
-            {showFormsMenu && (
-              <div
-                data-testid="forms-dropdown-menu"
-                className="absolute left-0 mt-1.5 w-72 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-2 z-50 text-xs"
+              <button
+                type="button"
+                disabled={!pdfBytes}
+                onClick={() => handleRequestDeletePage(activePage)}
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-50"
               >
-                {/* Quick Symbols Row */}
-                <div className="px-3 pb-2 border-b border-slate-800">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
-                    Quick Fill Symbols
-                  </span>
-                  <div className="grid grid-cols-5 gap-1">
+                <Trash2 className="w-4 h-4" />
+                <span>Delete Page</span>
+              </button>
+            </>
+          ) : (
+            <>
+              {/* 1. Pointer */}
+              <button
+                type="button"
+                data-testid="studio-tool-select"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('select');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'select'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <MousePointer className="w-4 h-4" />
+                <span>Pointer</span>
+              </button>
+
+              {/* 2. Edit Text */}
+              <button
+                type="button"
+                data-testid="studio-tool-existing-text"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('existing-text');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'existing-text'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Type className="w-4 h-4" />
+                <span>Edit Text</span>
+              </button>
+
+              {/* 3. Add Text */}
+              <button
+                type="button"
+                data-testid="studio-tool-text"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('text');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'text'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <FilePlus2 className="w-4 h-4" />
+                <span>Add Text</span>
+              </button>
+
+              {/* 4. Redact */}
+              <button
+                type="button"
+                data-testid="studio-tool-redact"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('redact');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'redact'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Square className="w-4 h-4 fill-current" />
+                <span>Redact</span>
+              </button>
+
+              {/* 5. Highlight */}
+              <button
+                type="button"
+                data-testid="studio-tool-highlight"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('highlight');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'highlight'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Highlighter className="w-4 h-4" />
+                <span>Highlight</span>
+              </button>
+
+              {/* 6. Underline */}
+              <button
+                type="button"
+                data-testid="studio-tool-underline"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('underline');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'underline'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <UnderlineIcon className="w-4 h-4" />
+                <span>Underline</span>
+              </button>
+
+              {/* 7. Strikeout */}
+              <button
+                type="button"
+                data-testid="studio-tool-strikethrough"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('strikethrough');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'strikethrough'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <StrikethroughIcon className="w-4 h-4" />
+                <span>Strikeout</span>
+              </button>
+
+              {/* 8. Stamp (Opens Centered Stamp Modal) */}
+              <button
+                type="button"
+                data-testid="studio-tool-stamp"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('stamp');
+                  setShowStampModal(true);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  activeTool === 'stamp' || showStampModal
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Stamp className="w-4 h-4" />
+                <span>Stamp</span>
+              </button>
+
+              {/* 9. Add Images (Opens Centered Image Upload Modal) */}
+              <button
+                type="button"
+                data-testid="studio-tool-image"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setReplacingImageTargetId(null);
+                  setActiveTool('image');
+                  setShowImageUploadModal(true);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[58px] ${
+                  activeTool === 'image' || showImageUploadModal
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <ImageIcon className="w-4 h-4" />
+                <span>Add Images</span>
+              </button>
+
+              {/* 10. Shapes Dropdown (Box, Circle, Circle Stroke, Cross, Check) */}
+              <div className="relative">
+                <button
+                  type="button"
+                  data-testid="studio-tool-shape"
+                  onClick={() => {
+                    setEditingId(null);
+                    setShowDrawingMenu(false);
+                    setShowFormsMenu(false);
+                    setActiveTool('shape');
+                    setShowShapesMenu((prev) => !prev);
+                  }}
+                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                    activeTool === 'shape' ||
+                    activeTool === 'symbol-check' ||
+                    activeTool === 'symbol-cross' ||
+                    showShapesMenu
+                      ? 'bg-[#1E293B] text-white shadow-xs'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Square className="w-4 h-4" />
+                  <span>Shapes</span>
+                </button>
+                {showShapesMenu && (
+                  <div className="absolute left-1/2 -translate-x-1/2 mt-1.5 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 z-50 text-xs text-slate-700">
                     {[
-                      { id: 'symbol-check', label: '✓', title: 'Checkmark (✓)' },
-                      { id: 'symbol-cross', label: '✕', title: 'Cross (✕)' },
-                      { id: 'symbol-dot', label: '•', title: 'Dot (•)' },
-                      { id: 'symbol-circle', label: '◯', title: 'Circle (◯)' },
-                      { id: 'symbol-checkbox', label: '☑', title: 'Checked Box (☑)' },
-                    ].map((sym) => (
+                      { id: 'rectangle', label: 'Box', icon: '□', mode: 'shape' as EditorToolMode },
+                      { id: 'ellipse', label: 'Circle', icon: '●', mode: 'shape' as EditorToolMode },
+                      { id: 'rounded-rect', label: 'Circle Stroke', icon: '◯', mode: 'shape' as EditorToolMode },
+                      { id: 'symbol-cross', label: 'Cross', icon: '✕', mode: 'symbol-cross' as EditorToolMode },
+                      { id: 'symbol-check', label: 'Check', icon: '✓', mode: 'symbol-check' as EditorToolMode },
+                    ].map((sh) => (
                       <button
-                        key={sym.id}
+                        key={sh.label}
                         type="button"
-                        title={sym.title}
                         onClick={() => {
-                          setActiveTool(sym.id as EditorToolMode);
-                          setShowFormsMenu(false);
+                          if (sh.mode === 'shape') {
+                            setActiveShapeType(sh.id as 'rectangle' | 'ellipse' | 'rounded-rect');
+                            setActiveTool('shape');
+                          } else {
+                            setActiveTool(sh.mode);
+                          }
+                          setShowShapesMenu(false);
                         }}
-                        className={`py-1.5 rounded-lg border font-bold text-sm flex items-center justify-center transition-colors ${
-                          activeTool === sym.id
-                            ? 'bg-red-600 border-red-500 text-white'
-                            : 'bg-slate-950 border-slate-800 text-slate-200 hover:bg-slate-800'
-                        }`}
+                        className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
                       >
-                        {sym.label}
+                        <span className="w-4 text-center font-bold text-slate-800">{sh.icon}</span>
+                        <span>{sh.label}</span>
                       </button>
                     ))}
                   </div>
-                </div>
-
-                {/* Interactive AcroForm Fields */}
-                <div className="py-1.5 border-b border-slate-800">
-                  <span className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                    Interactive AcroForm Fields
-                  </span>
-                  {[
-                    { id: 'form-text', label: 'Text Box (Single Line)', badge: 'Abc' },
-                    { id: 'form-multiline', label: 'Multiline Text Area', badge: '¶' },
-                    { id: 'form-dropdown', label: 'Dropdown Menu', badge: '▼' },
-                    { id: 'form-checkbox', label: 'Interactive Checkbox', badge: '☑' },
-                    { id: 'form-radio', label: 'Radio Button', badge: '◉' },
-                    { id: 'form-signature', label: 'Signature Field', badge: '✒' },
-                  ].map((fld) => (
-                    <button
-                      key={fld.id}
-                      type="button"
-                      data-testid={`tool-${fld.id}`}
-                      onClick={() => {
-                        setActiveTool(fld.id as EditorToolMode);
-                        setShowFormsMenu(false);
-                      }}
-                      className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-slate-800 ${
-                        activeTool === fld.id ? 'bg-red-600/20 text-red-300 font-semibold' : 'text-slate-200'
-                      }`}
-                    >
-                      <span>{fld.label}</span>
-                      <span className="px-1.5 py-0.5 rounded bg-slate-950 border border-slate-800 text-[10px] font-mono text-slate-400">
-                        {fld.badge}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Smart Form Actions */}
-                <div className="pt-1.5 space-y-0.5">
-                  <button
-                    type="button"
-                    disabled={!pdfBytes || isDetectingFields}
-                    onClick={handleDetectFormFields}
-                    className="w-full px-3 py-1.5 text-left text-sky-300 hover:bg-slate-800 flex items-center gap-2 disabled:opacity-40"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                    <span>{isDetectingFields ? 'Scanning PDF...' : 'Detect Form Fields Automatically'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFormEditMode((prev) => !prev);
-                      setShowFormsMenu(false);
-                    }}
-                    className="w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 flex items-center justify-between"
-                  >
-                    <span className="flex items-center gap-2">
-                      <Sliders className="w-3.5 h-3.5 text-slate-400" />
-                      Form Field Labels & Config Mode
-                    </span>
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        formEditMode ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {formEditMode ? 'ON' : 'OFF'}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!pdfBytes}
-                    onClick={() => {
-                      setShowFormsMenu(false);
-                      setShowTabOrderModal(true);
-                    }}
-                    className="w-full px-3 py-1.5 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2 disabled:opacity-40"
-                  >
-                    <ListFilter className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                    <span>Change Field Tab Order</span>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!pdfBytes}
-                    onClick={() => {
-                      setShowFormsMenu(false);
-                      setShareFormTitle(fileName.replace(/\.pdf$/i, ''));
-                      setCreatedShareUrl('');
-                      setShowShareFormModal(true);
-                    }}
-                    className="w-full px-3 py-1.5 text-left text-emerald-300 hover:bg-slate-800 flex items-center gap-2 disabled:opacity-40 font-semibold"
-                  >
-                    <Share2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                    <span>Publish & Share Fillable Form Link</span>
-                  </button>
-                </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* Keep Tool Active Toggle */}
+              {/* 11. Drawing Dropdown (Pencil, Line, Arrow, Polygon) */}
+              <div className="relative">
+                <button
+                  type="button"
+                  data-testid="studio-tool-drawing"
+                  onClick={() => {
+                    setEditingId(null);
+                    setShowShapesMenu(false);
+                    setShowFormsMenu(false);
+                    setActiveTool('drawing');
+                    setShowDrawingMenu((prev) => !prev);
+                  }}
+                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                    activeTool === 'drawing' || showDrawingMenu
+                      ? 'bg-[#1E293B] text-white shadow-xs'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Pencil className="w-4 h-4" />
+                  <span>Drawing</span>
+                </button>
+                {showDrawingMenu && (
+                  <div className="absolute left-1/2 -translate-x-1/2 mt-1.5 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 z-50 text-xs text-slate-700">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveTool('drawing');
+                        setShowDrawingMenu(false);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      <span>Pencil</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveShapeType('line');
+                        setActiveTool('shape');
+                        setShowDrawingMenu(false);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                    >
+                      <Minus className="w-3.5 h-3.5" />
+                      <span>Line</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveShapeType('arrow');
+                        setActiveTool('shape');
+                        setShowDrawingMenu(false);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                    >
+                      <ArrowUpRight className="w-3.5 h-3.5" />
+                      <span>Arrow</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveShapeType('rectangle');
+                        setActiveTool('shape');
+                        setShowDrawingMenu(false);
+                      }}
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                    >
+                      <Square className="w-3.5 h-3.5" />
+                      <span>Polygon</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* 12. True Eraser */}
+              <button
+                type="button"
+                data-testid="studio-tool-eraser"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('eraser');
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[58px] ${
+                  activeTool === 'eraser'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Eraser className="w-4 h-4" />
+                <span>True Eraser</span>
+              </button>
+
+              {/* 13. Spell Checker */}
+              <button
+                type="button"
+                data-testid="studio-tool-spellcheck"
+                onClick={() => {
+                  setEditingId(null);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setActiveTool('spellcheck');
+                  setStatusMessage(
+                    'Spell Checker active: Click any text line on the page to edit with browser spellcheck enabled.'
+                  );
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[62px] ${
+                  activeTool === 'spellcheck'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <SpellCheck className="w-4 h-4" />
+                <span>Spell Checker</span>
+              </button>
+
+              {/* 14. Find & Replace */}
+              <button
+                type="button"
+                data-testid="studio-find-replace-button"
+                onClick={() => {
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  setShowFormsMenu(false);
+                  setShowFindBar((prev) => !prev);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[64px] ${
+                  showFindBar
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Search className="w-4 h-4" />
+                <span>Find &amp; Replace</span>
+              </button>
+
+              {/* Sign Tool Quick Button (Preserves testid studio-tool-signature) */}
+              <button
+                type="button"
+                data-testid="studio-tool-signature"
+                onClick={() => {
+                  setEditingId(null);
+                  setSigningFormFieldId(null);
+                  setReplacingSignatureTargetId(null);
+                  setActiveTool('signature');
+                  setShowSignaturePad(true);
+                }}
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[48px] ${
+                  activeTool === 'signature' || showSignaturePad
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <PenTool className="w-4 h-4" />
+                <span>Sign</span>
+              </button>
+
+              {/* Crop Tool Quick Button (Preserves testid studio-tool-crop) */}
+              <button
+                type="button"
+                data-testid="studio-tool-crop"
+                onClick={() => {
+                  setEditingId(null);
+                  setActiveTool('crop');
+                }}
+                className={`hidden xl:flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[48px] ${
+                  activeTool === 'crop'
+                    ? 'bg-[#1E293B] text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <Crop className="w-4 h-4" />
+                <span>Crop</span>
+              </button>
+
+              {/* Interactive Forms Menu */}
+              <div className="relative">
+                <button
+                  type="button"
+                  data-testid="forms-menu-button"
+                  onClick={() => setShowFormsMenu((prev) => !prev)}
+                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[52px] ${
+                    activeTool.startsWith('form-') || activeTool.startsWith('symbol-') || showFormsMenu
+                      ? 'bg-[#1E293B] text-white shadow-xs'
+                      : 'text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <CheckSquare className="w-4 h-4" />
+                  <span>Forms</span>
+                </button>
+
+                {showFormsMenu && (
+                  <div
+                    data-testid="forms-dropdown-menu"
+                    className="absolute right-0 mt-1.5 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl py-2 z-50 text-xs text-slate-800"
+                  >
+                    <div className="px-3 pb-2 border-b border-slate-100">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
+                        Quick Fill Symbols
+                      </span>
+                      <div className="grid grid-cols-5 gap-1">
+                        {[
+                          { id: 'symbol-check', label: '✓', title: 'Checkmark (✓)' },
+                          { id: 'symbol-cross', label: '✕', title: 'Cross (✕)' },
+                          { id: 'symbol-dot', label: '•', title: 'Dot (•)' },
+                          { id: 'symbol-circle', label: '◯', title: 'Circle (◯)' },
+                          { id: 'symbol-checkbox', label: '☑', title: 'Checked Box (☑)' },
+                        ].map((sym) => (
+                          <button
+                            key={sym.id}
+                            type="button"
+                            title={sym.title}
+                            onClick={() => {
+                              setActiveTool(sym.id as EditorToolMode);
+                              setShowFormsMenu(false);
+                            }}
+                            className={`py-1.5 rounded-lg border font-bold text-sm flex items-center justify-center transition-colors ${
+                              activeTool === sym.id
+                                ? 'bg-[#1E293B] border-[#1E293B] text-white'
+                                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            {sym.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="py-1.5 border-b border-slate-100">
+                      <span className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                        Interactive AcroForm Fields
+                      </span>
+                      {[
+                        { id: 'form-text', label: 'Text Box (Single Line)', badge: 'Abc' },
+                        { id: 'form-multiline', label: 'Multiline Text Area', badge: '¶' },
+                        { id: 'form-dropdown', label: 'Dropdown Menu', badge: '▼' },
+                        { id: 'form-checkbox', label: 'Interactive Checkbox', badge: '☑' },
+                        { id: 'form-radio', label: 'Radio Button', badge: '◉' },
+                        { id: 'form-signature', label: 'Signature Field', badge: '✒' },
+                      ].map((fld) => (
+                        <button
+                          key={fld.id}
+                          type="button"
+                          data-testid={`tool-${fld.id}`}
+                          onClick={() => {
+                            setActiveTool(fld.id as EditorToolMode);
+                            setShowFormsMenu(false);
+                          }}
+                          className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-slate-100 ${
+                            activeTool === fld.id ? 'bg-slate-100 text-slate-900 font-semibold' : 'text-slate-700'
+                          }`}
+                        >
+                          <span>{fld.label}</span>
+                          <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-500">
+                            {fld.badge}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="pt-1.5 space-y-0.5">
+                      <button
+                        type="button"
+                        disabled={!pdfBytes || isDetectingFields}
+                        onClick={handleDetectFormFields}
+                        className="w-full px-3 py-1.5 text-left text-sky-700 hover:bg-slate-100 flex items-center gap-2 disabled:opacity-40"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                        <span>{isDetectingFields ? 'Scanning PDF...' : 'Detect Form Fields Automatically'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFormEditMode((prev) => !prev);
+                          setShowFormsMenu(false);
+                        }}
+                        className="w-full px-3 py-1.5 text-left text-slate-700 hover:bg-slate-100 flex items-center justify-between"
+                      >
+                        <span className="flex items-center gap-2">
+                          <Sliders className="w-3.5 h-3.5 text-slate-400" />
+                          Form Field Labels &amp; Config Mode
+                        </span>
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            formEditMode ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {formEditMode ? 'ON' : 'OFF'}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!pdfBytes}
+                        onClick={() => {
+                          setShowFormsMenu(false);
+                          setShowTabOrderModal(true);
+                        }}
+                        className="w-full px-3 py-1.5 text-left text-slate-700 hover:bg-slate-100 flex items-center gap-2 disabled:opacity-40"
+                      >
+                        <ListFilter className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span>Change Field Tab Order</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!pdfBytes}
+                        onClick={() => {
+                          setShowFormsMenu(false);
+                          setShareFormTitle(fileName.replace(/\.pdf$/i, ''));
+                          setCreatedShareUrl('');
+                          setShowShareFormModal(true);
+                        }}
+                        className="w-full px-3 py-1.5 text-left text-emerald-700 hover:bg-slate-100 flex items-center gap-2 disabled:opacity-40 font-semibold"
+                      >
+                        <Share2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Publish &amp; Share Fillable Form Link</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right Compact Zoom + Keep Active Controls */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             data-testid="keep-tool-active-toggle"
             onClick={() => setKeepToolActive((prev) => !prev)}
-            className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[11px] font-semibold border transition-colors shrink-0 whitespace-nowrap ${
+            className={`hidden 2xl:flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors ${
               keepToolActive
-                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                ? 'bg-amber-50 border-amber-300 text-amber-800'
+                : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
             }`}
-            title="Keep selected tool active after placing an element on the page"
+            title="Keep selected tool active after placing an element"
           >
             <Pin className="w-3 h-3" />
-            <span className="hidden 2xl:inline">Keep Active</span>
-          </button>
-        </div>
-
-        {/* Right: Find & Replace + Zoom / Fit Controls */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {/* Find & Replace toggle */}
-          <button
-            type="button"
-            data-testid="studio-find-replace-button"
-            onClick={() => setShowFindBar((prev) => !prev)}
-            className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-semibold transition-colors whitespace-nowrap ${
-              showFindBar
-                ? 'bg-red-600/20 border-red-500/50 text-red-300'
-                : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-white'
-            }`}
-            title="Find & Replace Text (Ctrl+F)"
-          >
-            <Search className="w-3.5 h-3.5" />
-            <span className="hidden 2xl:inline">Find & Replace</span>
+            <span>Pin</span>
           </button>
 
-          {/* Zoom Controls */}
-          <div className="hidden md:flex items-center bg-slate-950 rounded-lg p-0.5 border border-slate-800">
+          <div className="hidden md:flex items-center bg-slate-50 rounded-lg p-0.5 border border-slate-200 text-slate-700">
             <button
               type="button"
               onClick={() => {
                 setFitMode('custom');
                 setZoomPercent((z) => Math.max(30, z - 15));
               }}
-              className="p-1.5 text-slate-300 hover:text-white"
+              className="p-1.5 hover:text-slate-950"
               title="Zoom Out"
             >
               <ZoomOut className="w-3.5 h-3.5" />
             </button>
-            <span className="px-1.5 text-[11px] font-mono font-semibold text-slate-300 min-w-[42px] text-center">
+            <span className="px-1.5 text-[11px] font-mono font-semibold min-w-[42px] text-center">
               {zoomPercent}%
             </span>
             <button
@@ -2832,41 +3580,35 @@ export function PdfEditorWorkspace({
                 setFitMode('custom');
                 setZoomPercent((z) => Math.min(220, z + 15));
               }}
-              className="p-1.5 text-slate-300 hover:text-white"
+              className="p-1.5 hover:text-slate-950"
               title="Zoom In"
             >
               <ZoomIn className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => calculateFitZoom('page')}
-              className={`px-2 py-1 text-[10px] font-semibold rounded transition-colors ${
-                fitMode === 'page' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-              title="Fit Page in Viewport"
-            >
-              Fit
-            </button>
-            <button
-              type="button"
-              onClick={() => calculateFitZoom('width')}
-              className={`px-2 py-1 text-[10px] font-semibold rounded transition-colors ${
-                fitMode === 'width' ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-              title="Fit Width"
-            >
-              Width
             </button>
           </div>
         </div>
       </div>
 
-      {/* FIND & REPLACE BAR */}
+      {/* FLOATING FIND & REPLACE POPOVER CARD (Matches Video 01:26) */}
       {showFindBar && pdfBytes && (
-        <div className="bg-slate-900 border-b border-slate-800 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs z-20">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1">
-              <Search className="w-3.5 h-3.5 text-slate-400" />
+        <div
+          data-testid="find-replace-popover"
+          className="fixed top-[122px] right-16 z-50 w-80 bg-white border border-slate-200 rounded-xl shadow-2xl p-4 text-xs text-slate-700 space-y-3"
+        >
+          <div className="flex items-center justify-between">
+            <h4 className="font-bold text-sm text-slate-900">Find and replace</h4>
+            <button
+              type="button"
+              onClick={() => setShowFindBar(false)}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-600 block">Find</label>
+            <div className="flex items-center border border-slate-300 rounded-lg overflow-hidden bg-white focus-within:border-blue-500">
               <input
                 type="text"
                 value={findQuery}
@@ -2874,50 +3616,73 @@ export function PdfEditorWorkspace({
                   setFindQuery(e.target.value);
                   setActiveMatchIdx(0);
                 }}
-                placeholder="Find text in PDF..."
-                className="bg-transparent text-white focus:outline-none w-40 sm:w-52 text-xs"
+                placeholder="Find text..."
+                className="flex-1 px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none"
               />
               {findQuery && (
-                <span className="text-[10px] font-mono text-slate-400">
-                  {findMatches.length > 0 ? `${activeMatchIdx + 1}/${findMatches.length}` : '0 matches'}
+                <span className="text-[10px] font-mono text-slate-400 px-1.5">
+                  {findMatches.length > 0 ? `${activeMatchIdx + 1}/${findMatches.length}` : '0'}
                 </span>
               )}
-            </div>
-
-            <div className="flex items-center gap-1">
               <button
                 type="button"
                 disabled={findMatches.length === 0}
                 onClick={() => handleJumpToMatch(activeMatchIdx - 1)}
-                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200"
+                className="px-2 py-1.5 border-l border-slate-200 hover:bg-slate-100 disabled:opacity-40 text-slate-600"
+                title="Previous match"
               >
-                Prev
+                ‹
               </button>
               <button
                 type="button"
                 disabled={findMatches.length === 0}
                 onClick={() => handleJumpToMatch(activeMatchIdx + 1)}
-                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200"
+                className="px-2 py-1.5 border-l border-slate-200 hover:bg-slate-100 disabled:opacity-40 text-slate-600"
+                title="Next match"
               >
-                Next
+                ›
               </button>
             </div>
+          </div>
 
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1">
+          <div className="flex items-center gap-4 pt-0.5">
+            <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-600">
               <input
-                type="text"
-                value={replaceQuery}
-                onChange={(e) => setReplaceQuery(e.target.value)}
-                placeholder="Replace with..."
-                className="bg-transparent text-white focus:outline-none w-40 sm:w-52 text-xs"
+                type="checkbox"
+                checked={findMatchCase}
+                onChange={(e) => setFindMatchCase(e.target.checked)}
+                className="rounded accent-blue-600"
               />
-            </div>
+              <span>Match case</span>
+            </label>
+            <label className="flex items-center gap-1.5 cursor-pointer text-[11px] text-slate-600">
+              <input
+                type="checkbox"
+                checked={findExactMatch}
+                onChange={(e) => setFindExactMatch(e.target.checked)}
+                className="rounded accent-blue-600"
+              />
+              <span>Exact match</span>
+            </label>
+          </div>
 
+          <div className="space-y-1">
+            <label className="text-[11px] font-semibold text-slate-600 block">Replace</label>
+            <input
+              type="text"
+              value={replaceQuery}
+              onChange={(e) => setReplaceQuery(e.target.value)}
+              placeholder="Replace with..."
+              className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg text-xs text-slate-900 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-1">
             <button
               type="button"
               disabled={findMatches.length === 0}
               onClick={handleReplaceCurrentMatch}
-              className="px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white font-semibold"
+              className="py-2 rounded-lg bg-[#1E293B] hover:bg-slate-800 disabled:opacity-40 text-white font-semibold text-xs transition-colors"
             >
               Replace
             </button>
@@ -2925,28 +3690,19 @@ export function PdfEditorWorkspace({
               type="button"
               disabled={findMatches.length === 0}
               onClick={handleReplaceAllMatches}
-              className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-semibold border border-slate-700"
+              className="py-2 rounded-lg bg-[#1E293B] hover:bg-slate-800 disabled:opacity-40 text-white font-semibold text-xs transition-colors"
             >
-              Replace All ({findMatches.length})
+              Replace All
             </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setShowFindBar(false)}
-            className="text-slate-400 hover:text-white p-1"
-            title="Close Find & Replace"
-          >
-            <X className="w-4 h-4" />
-          </button>
         </div>
       )}
 
       {/* EXPORT READY BANNER */}
       {exportedResult && (
-        <div className="bg-emerald-950/90 border-b border-emerald-800 px-4 py-2 flex items-center justify-between gap-3 text-xs shrink-0">
-          <div className="flex items-center gap-2 text-emerald-200">
-            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+        <div className="bg-emerald-50 border-b border-emerald-200 px-4 py-2 flex items-center justify-between gap-3 text-xs shrink-0">
+          <div className="flex items-center gap-2 text-emerald-900">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>
               <strong>{exportedResult.fileName}</strong> ({formatFileSize(exportedResult.byteLength)}) is ready.
             </span>
@@ -2963,7 +3719,7 @@ export function PdfEditorWorkspace({
             <button
               type="button"
               onClick={() => setExportedResult(null)}
-              className="text-emerald-400 hover:text-white px-1.5"
+              className="text-emerald-700 hover:text-emerald-950 px-1.5 font-medium"
             >
               Dismiss
             </button>
@@ -2973,156 +3729,76 @@ export function PdfEditorWorkspace({
 
       {/* STATUS OR ERROR BAR */}
       {errorMessage && (
-        <div className="bg-red-950/90 border-b border-red-800 px-4 py-1.5 flex items-center justify-between text-xs text-red-200 shrink-0">
+        <div className="bg-red-50 border-b border-red-200 px-4 py-1.5 flex items-center justify-between text-xs text-red-800 shrink-0">
           <div className="flex items-center gap-2">
-            <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+            <AlertCircle className="w-3.5 h-3.5 text-red-600 shrink-0" />
             <span>{errorMessage}</span>
           </div>
-          <button type="button" onClick={() => setErrorMessage('')} className="text-red-300 hover:text-white font-semibold">
+          <button
+            type="button"
+            onClick={() => setErrorMessage('')}
+            className="text-red-700 hover:text-red-950 font-semibold"
+          >
             Dismiss
           </button>
         </div>
       )}
 
-      {/* MAIN THREE-PANEL WORKSPACE */}
+      {/* MAIN WORKSPACE: LEFT CATEGORY RAIL + CENTER CANVAS + RIGHT THUMBNAILS SIDEBAR */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* LEFT SIDEBAR: COMPACT SEJDA-STYLE PAGE THUMBNAIL RAIL */}
-        {pdfBytes && (
-          <aside
-            data-testid="page-thumbnail-sidebar"
-            className={`${
-              isSidebarOpen ? 'w-28 sm:w-32' : 'w-9'
-            } bg-slate-950 border-r border-slate-800 flex flex-col transition-all duration-200 shrink-0 z-10`}
-          >
-            <div className="px-2 py-1.5 border-b border-slate-800 flex items-center justify-between">
-              {isSidebarOpen && (
-                <div className="flex items-center gap-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Pages ({visibleThumbnails.length})
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleInsertBlankPageAfter(activePage)}
-                    className="p-0.5 rounded bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-slate-800"
-                    title="Insert Blank Page After Current Page"
-                  >
-                    <PlusCircle className="w-3 h-3" />
-                  </button>
-                </div>
-              )}
+        {/* LEFT VERTICAL CATEGORY RAIL (Matches PDFSimpli Screenshot & Video 01:28-02:00) */}
+        <aside
+          data-testid="studio-category-rail"
+          className="w-[68px] bg-white border-r border-slate-200 flex flex-col items-center py-3 gap-2 shrink-0 z-20"
+        >
+          {[
+            { id: 'edit', label: 'Edit', icon: PenTool },
+            { id: 'convert', label: 'Convert', icon: RefreshCw },
+            { id: 'organize', label: 'Organize', icon: Layers },
+            { id: 'sign', label: 'Sign', icon: UserCheck },
+            { id: 'fields', label: 'Add Fields', icon: CheckSquare },
+            { id: 'share', label: 'Share', icon: Share2 },
+            { id: 'secure', label: 'Secure', icon: Lock },
+          ].map((cat) => {
+            const CIcon = cat.icon;
+            const isActiveCat = activeCategory === cat.id;
+            return (
               <button
+                key={cat.id}
                 type="button"
-                onClick={() => setIsSidebarOpen((prev) => !prev)}
-                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white ml-auto"
-                title={isSidebarOpen ? 'Collapse Pages Panel' : 'Expand Pages Panel'}
+                data-testid={`studio-category-${cat.id}`}
+                onClick={() => {
+                  setActiveCategory(cat.id as StudioCategory);
+                  setShowShapesMenu(false);
+                  setShowDrawingMenu(false);
+                  if (cat.id === 'edit') {
+                    setActiveTool('existing-text');
+                  } else if (cat.id === 'sign') {
+                    setShowSignChoiceModal(true);
+                  } else if (cat.id === 'fields') {
+                    setShowFormsMenu(true);
+                  } else if (cat.id === 'share') {
+                    if (pdfBytes) {
+                      setShareFormTitle(fileName.replace(/\.pdf$/i, ''));
+                      setCreatedShareUrl('');
+                      setShowShareFormModal(true);
+                    }
+                  } else if (cat.id === 'secure') {
+                    setActiveTool('watermark');
+                  }
+                }}
+                className={`w-13 py-2 rounded-xl flex flex-col items-center justify-center gap-1 text-[10.5px] font-semibold transition-all ${
+                  isActiveCat
+                    ? 'bg-[#1E293B] text-white shadow-sm'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                }`}
               >
-                {isSidebarOpen ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                <CIcon className="w-4 h-4" />
+                <span className="leading-tight text-center">{cat.label}</span>
               </button>
-            </div>
-
-            {isSidebarOpen && (
-              <div className="flex-1 overflow-y-auto p-1.5 space-y-2">
-                {orderedThumbnails.map(({ thumb, seqIndex }, displayIdx) => {
-                  const isActive = thumb.pageNumber === activePage;
-                  const countOnPage = annotations.filter((a) => a.pageNumber === thumb.pageNumber).length;
-                  const rot = extraRotations[thumb.pageNumber] || 0;
-                  const isCropped = Boolean(pageCrops[thumb.pageNumber]);
-                  const isDragOver = dragOverPagePos === seqIndex;
-
-                  return (
-                    <div
-                      key={`${thumb.pageNumber}_${seqIndex}`}
-                      data-testid={`page-thumbnail-${displayIdx + 1}`}
-                      draggable
-                      onDragStart={() => handlePageDragStart(seqIndex)}
-                      onDragOver={(e) => handlePageDragOver(e, seqIndex)}
-                      onDrop={(e) => handlePageDrop(e, seqIndex)}
-                      onClick={() => setActivePage(thumb.pageNumber)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setActivePage(thumb.pageNumber);
-                        }
-                      }}
-                      className={`group relative w-full text-left rounded-lg p-1.5 border transition-all cursor-pointer ${
-                        isActive
-                          ? 'bg-red-950/35 border-red-500 ring-1 ring-red-500/40'
-                          : isDragOver
-                            ? 'bg-slate-800/80 border-sky-400 ring-1 ring-sky-400'
-                            : 'bg-slate-900/60 border-slate-800/90 hover:border-slate-700'
-                      }`}
-                    >
-                      {/* Compact Hover Quick Actions */}
-                      <div className="absolute top-1.5 right-1.5 z-10 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                        <button
-                          type="button"
-                          onClick={(e) => handleRotateCurrentPage(thumb.pageNumber, e)}
-                          title={`Rotate Page ${thumb.pageNumber} (+90°)`}
-                          className="p-0.5 rounded bg-slate-900/90 hover:bg-slate-800 text-slate-200 border border-slate-700 shadow"
-                        >
-                          <RotateCw className="w-2.5 h-2.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleDuplicatePage(seqIndex, thumb.pageNumber, e)}
-                          title={`Duplicate Page ${thumb.pageNumber}`}
-                          className="p-0.5 rounded bg-slate-900/90 hover:bg-slate-800 text-sky-300 border border-slate-700 shadow"
-                        >
-                          <Copy className="w-2.5 h-2.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => handleRequestDeletePage(thumb.pageNumber, e)}
-                          title={
-                            visibleThumbnails.length <= 1
-                              ? 'Close / Clear Document'
-                              : `Delete Page ${thumb.pageNumber}`
-                          }
-                          className="p-0.5 rounded bg-red-950/90 hover:bg-red-600 text-red-200 hover:text-white border border-red-800 shadow"
-                        >
-                          <Trash2 className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-
-                      <div className="relative bg-white rounded overflow-hidden aspect-[1/1.414] max-w-[88px] mx-auto flex items-center justify-center shadow-inner">
-                        <img
-                          src={thumb.dataUrl}
-                          alt={`Page ${thumb.pageNumber}`}
-                          className="w-full h-full object-contain transition-transform"
-                          style={{ transform: `rotate(${rot}deg)` }}
-                        />
-                        {countOnPage > 0 && (
-                          <span className="absolute bottom-1 right-1 bg-red-600 text-white text-[9px] font-bold px-1 py-0.2 rounded-full shadow">
-                            {countOnPage}
-                          </span>
-                        )}
-                        {isCropped && (
-                          <span className="absolute bottom-1 left-1 bg-amber-600 text-white text-[8px] font-bold px-1 rounded shadow">
-                            CROP
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex items-center justify-between text-[10px] px-0.5">
-                        <span
-                          className={`font-bold flex items-center gap-0.5 ${
-                            isActive ? 'text-red-400' : 'text-slate-400'
-                          }`}
-                        >
-                          <GripVertical className="w-2.5 h-2.5 text-slate-600 cursor-grab" />
-                          {displayIdx + 1}
-                          {thumb.pageNumber !== displayIdx + 1 ? ` (#${thumb.pageNumber})` : ''}
-                        </span>
-                        {rot > 0 && <span className="text-[9px] text-amber-400">+{rot}°</span>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </aside>
-        )}
+            );
+          })}
+        </aside>
 
         {/* CENTER VIEWPORT: INTERACTIVE CANVAS OR UPLOAD DROPZONE */}
         <main
@@ -3134,31 +3810,33 @@ export function PdfEditorWorkspace({
               setSelectedId(null);
               setEditingId(null);
               setSelectedTextLine(null);
+              setShowShapesMenu(false);
+              setShowDrawingMenu(false);
               setShowFormsMenu(false);
               setShowMoreMenu(false);
             }
           }}
-          className={`flex-1 bg-slate-900/95 overflow-auto flex items-center justify-center p-4 sm:p-6 relative ${
+          className={`flex-1 bg-[#F1F5F9] overflow-auto flex items-center justify-center p-4 sm:p-6 relative ${
             activeTool === 'pan' ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : ''
           }`}
         >
           {!pdfBytes ? (
             /* EMPTY UPLOAD STATE */
-            <div className="max-w-md w-full bg-slate-950 border-2 border-dashed border-slate-800 rounded-2xl p-8 text-center space-y-5 my-auto">
-              <div className="w-14 h-14 rounded-2xl bg-red-600/10 border border-red-500/20 text-red-500 flex items-center justify-center mx-auto">
+            <div className="max-w-md w-full bg-white border-2 border-dashed border-slate-300 rounded-2xl p-8 text-center space-y-5 my-auto shadow-sm">
+              <div className="w-14 h-14 rounded-2xl bg-red-50 border border-red-100 text-red-600 flex items-center justify-center mx-auto">
                 <Upload className="w-7 h-7" />
               </div>
               <div className="space-y-1.5">
-                <h2 className="text-lg font-bold text-white">Open a PDF in PDFNestly Studio</h2>
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  Click any existing text directly on the PDF canvas to edit, format, or delete it in-place. Insert images, signatures, shapes, or crop pages with full visual precision.
+                <h2 className="text-lg font-bold text-slate-900">Open a PDF in PDFNestly Studio</h2>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Click any existing text directly on the PDF canvas to edit, format, or delete it in-place. Add stamps, images, shapes, signatures, or erase areas with full visual precision.
                 </p>
               </div>
               <div className="flex flex-col sm:flex-row gap-2.5 justify-center pt-1">
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-xs font-bold text-white transition-colors shadow-lg shadow-red-600/20"
+                  className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#F45B2A] hover:bg-[#E04819] text-xs font-bold text-white transition-colors shadow-md"
                 >
                   <Upload className="w-4 h-4" />
                   Select PDF File
@@ -3166,9 +3844,9 @@ export function PdfEditorWorkspace({
                 <button
                   type="button"
                   onClick={handleLoadSample}
-                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 transition-colors"
+                  className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-xs font-semibold text-slate-800 transition-colors"
                 >
-                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  <Sparkles className="w-4 h-4 text-amber-500" />
                   Load 4-Page Sample Contract
                 </button>
               </div>
@@ -3176,20 +3854,10 @@ export function PdfEditorWorkspace({
           ) : (
             /* ACTIVE PDF PAGE CANVAS */
             <div className="my-auto flex flex-col items-center">
-              {/* Contextual Mode Banner */}
-              {(activeTool === 'select' || activeTool === 'existing-text' || activeTool === 'text') && (
-                <div className="mb-3 px-3.5 py-1.5 rounded-full bg-slate-950/90 border border-slate-800 text-slate-300 text-[11px] font-medium flex items-center gap-2 shadow-lg">
-                  <Sparkles className="w-3.5 h-3.5 text-red-400" />
-                  <span>
-                    <strong>Direct Canvas Editing:</strong> Click any existing text to edit it in-place on the PDF{activeTool === 'text' ? ', or click blank space to add new text' : ''}.
-                  </span>
-                </div>
-              )}
-
               {activeTool === 'crop' && (
-                <div className="mb-3 px-4 py-2 rounded-xl bg-amber-950/90 border border-amber-700 text-amber-200 text-xs font-medium flex flex-wrap items-center gap-3 shadow-lg">
+                <div className="mb-3 px-4 py-2 rounded-xl bg-white border border-amber-300 text-slate-800 text-xs font-medium flex flex-wrap items-center gap-3 shadow-md">
                   <div className="flex items-center gap-1.5">
-                    <Crop className="w-4 h-4 text-amber-400" />
+                    <Crop className="w-4 h-4 text-amber-600" />
                     <span>
                       Crop Area: <strong>{Math.round(draftCrop.widthPercent)}% × {Math.round(draftCrop.heightPercent)}%</strong>
                     </span>
@@ -3205,7 +3873,7 @@ export function PdfEditorWorkspace({
                     <button
                       type="button"
                       onClick={() => handleApplyCrop(true)}
-                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs border border-amber-500/40 transition-colors"
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-semibold text-xs transition-colors"
                     >
                       Apply to All Pages
                     </button>
@@ -3213,7 +3881,7 @@ export function PdfEditorWorkspace({
                       <button
                         type="button"
                         onClick={() => handleResetCrop(false)}
-                        className="px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs"
+                        className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs"
                       >
                         Reset
                       </button>
@@ -3221,7 +3889,7 @@ export function PdfEditorWorkspace({
                     <button
                       type="button"
                       onClick={() => setActiveTool('select')}
-                      className="px-2 py-1 text-amber-300 hover:text-white text-xs"
+                      className="px-2 py-1 text-slate-500 hover:text-slate-900 text-xs"
                     >
                       Cancel
                     </button>
@@ -3230,13 +3898,13 @@ export function PdfEditorWorkspace({
               )}
 
               {activeTool === 'image' && pendingImageUrl && (
-                <div className="mb-3 px-3.5 py-1.5 rounded-full bg-emerald-950/90 border border-emerald-700 text-emerald-200 text-xs font-medium flex items-center gap-2 shadow-lg">
-                  <ImageIcon className="w-3.5 h-3.5 text-emerald-400" />
+                <div className="mb-3 px-3.5 py-1.5 rounded-full bg-white border border-emerald-300 text-emerald-900 text-xs font-medium flex items-center gap-2 shadow-md">
+                  <ImageIcon className="w-3.5 h-3.5 text-emerald-600" />
                   <span>Click anywhere on the page to place your image, or</span>
                   <button
                     type="button"
                     onClick={handlePlaceImageAtCenter}
-                    className="underline font-bold text-white hover:text-emerald-300"
+                    className="underline font-bold text-emerald-700 hover:text-emerald-900"
                   >
                     Place at Center
                   </button>
@@ -3253,14 +3921,14 @@ export function PdfEditorWorkspace({
                   width: `${displayWidthPx}px`,
                   height: `${displayHeightPx}px`,
                 }}
-                className={`relative bg-white shadow-2xl rounded-sm transition-all select-none ${
+                className={`relative bg-white shadow-xl border border-slate-200/80 rounded-xs transition-all select-none ${
                   activeTool === 'pan'
                     ? isPanning
                       ? 'cursor-grabbing'
                       : 'cursor-grab'
                     : activeTool === 'crop'
                       ? 'cursor-crosshair'
-                      : activeTool !== 'select' && activeTool !== 'existing-text'
+                      : activeTool !== 'select' && activeTool !== 'existing-text' && activeTool !== 'spellcheck'
                         ? 'cursor-crosshair'
                         : 'cursor-default'
                 }`}
@@ -3282,6 +3950,28 @@ export function PdfEditorWorkspace({
                     />
                   </svg>
                 )}
+
+                {/* Live Click-and-Drag Box Preview (Redact, True Eraser, Highlight, Underline, Strikeout, Shapes) */}
+                {drawingBoxDraft && (
+                  <div
+                    style={{
+                      left: `${Math.min(drawingBoxDraft.startX, drawingBoxDraft.curX)}%`,
+                      top: `${Math.min(drawingBoxDraft.startY, drawingBoxDraft.curY)}%`,
+                      width: `${Math.max(0.5, Math.abs(drawingBoxDraft.curX - drawingBoxDraft.startX))}%`,
+                      height: `${Math.max(0.5, Math.abs(drawingBoxDraft.curY - drawingBoxDraft.startY))}%`,
+                    }}
+                    className={`absolute pointer-events-none z-40 ${
+                      drawingBoxDraft.tool === 'redact'
+                        ? 'bg-black/80 border border-black'
+                        : drawingBoxDraft.tool === 'eraser'
+                          ? 'bg-white/90 border-2 border-dashed border-slate-500'
+                          : drawingBoxDraft.tool === 'highlight'
+                            ? 'bg-yellow-300/60 border border-yellow-500'
+                            : 'border-2 border-dashed border-blue-600 bg-blue-500/10'
+                    }`}
+                  />
+                )}
+
                 {/* Rendered PDF Page Image */}
                 {pageRenderUrl ? (
                   <img
@@ -3292,7 +3982,7 @@ export function PdfEditorWorkspace({
                     draggable={false}
                   />
                 ) : renderError ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-slate-950 text-red-300 text-xs gap-3">
+                  <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-white text-red-600 text-xs gap-3">
                     <AlertCircle className="w-6 h-6 text-red-500" />
                     <p>{renderError}</p>
                     <button
@@ -3348,7 +4038,6 @@ export function PdfEditorWorkspace({
                       }}
                       className="absolute border-2 border-amber-400 bg-transparent shadow-[0_0_0_9999px_rgba(2,6,23,0.55)] cursor-move"
                     >
-                      {/* Rule of thirds grid lines */}
                       <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none">
                         <div className="border-r border-b border-amber-300/30" />
                         <div className="border-r border-b border-amber-300/30" />
@@ -3361,7 +4050,6 @@ export function PdfEditorWorkspace({
                         <div />
                       </div>
 
-                      {/* 8 Resize Handles */}
                       {(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const).map((h) => {
                         const posClass =
                           h === 'nw'
@@ -3391,16 +4079,20 @@ export function PdfEditorWorkspace({
                   </div>
                 )}
 
-                {/* HOVER-TO-IDENTIFY & CLICK-TO-EDIT EXISTING PDF TEXT LAYER */}
-                {(activeTool === 'select' || activeTool === 'existing-text' || activeTool === 'text') &&
+                {/* HOVER-TO-IDENTIFY & CLICK-TO-EDIT EXISTING PDF TEXT LAYER (Dashed Blue Outlines in Edit Text Mode) */}
+                {(activeTool === 'select' ||
+                  activeTool === 'existing-text' ||
+                  activeTool === 'spellcheck' ||
+                  activeTool === 'text') &&
                   pageTextLines.map((line, idx) => {
-                    // Do not render raw hover target if this line has already been converted into an in-place edit annotation
                     if (isLineAlreadyEdited(line)) return null;
 
                     const isHovered = hoveredLineIdx === idx;
                     const isSearchMatch =
                       findQuery.trim().length > 0 &&
-                      line.text.toLowerCase().includes(findQuery.trim().toLowerCase());
+                      (findMatchCase
+                        ? line.text.includes(findQuery.trim())
+                        : line.text.toLowerCase().includes(findQuery.trim().toLowerCase()));
 
                     return (
                       <div
@@ -3419,19 +4111,19 @@ export function PdfEditorWorkspace({
                         className={`absolute transition-all cursor-text rounded-[2px] ${
                           isSearchMatch
                             ? 'bg-amber-400/35 ring-2 ring-amber-500 z-10'
-                            : activeTool === 'existing-text'
+                            : activeTool === 'existing-text' || activeTool === 'spellcheck'
                               ? isHovered
-                                ? 'bg-red-500/15 ring-1.5 ring-red-500 z-10'
-                                : 'bg-sky-500/5 ring-1 ring-sky-500/30 hover:ring-red-500'
+                                ? 'bg-blue-500/10 border border-blue-600 z-10'
+                                : 'border border-dashed border-blue-500/75 hover:border-blue-600'
                               : isHovered
-                                ? 'bg-sky-500/10 ring-1 ring-sky-500/75 z-10'
+                                ? 'border border-dashed border-blue-500/80 bg-blue-500/5 z-10'
                                 : 'bg-transparent'
                         }`}
                       />
                     );
                   })}
 
-                {/* ORIGIN MASK FOR MOVED EXISTING TEXT EDITS (only used if PDF stream stripping did not apply, e.g. scanned raster PDFs) */}
+                {/* ORIGIN MASK FOR MOVED EXISTING TEXT EDITS */}
                 {pageAnnotations
                   .filter(
                     (item) =>
@@ -3471,7 +4163,6 @@ export function PdfEditorWorkspace({
                     .filter(Boolean)
                     .join(' ');
 
-                  // Position floating toolbar below the text box if too close to top of page
                   const toolbarBelow = item.yPercent < 12;
 
                   return (
@@ -3504,13 +4195,13 @@ export function PdfEditorWorkspace({
                         isEditingThis ? 'z-30 cursor-text' : 'z-20 cursor-move'
                       } ${
                         isSelected
-                          ? 'ring-2 ring-red-500 shadow-lg'
+                          ? 'ring-1.5 ring-blue-600 shadow-sm'
                           : item.isExistingTextEdit && item.text === ''
                             ? 'hover:ring-1 hover:ring-slate-300'
-                            : 'hover:ring-1 hover:ring-red-400/70'
+                            : 'hover:ring-1 hover:ring-blue-400/70'
                       }`}
                     >
-                      {/* CONTEXTUAL FLOATING TEXT FORMATTING TOOLBAR (Phase 3) */}
+                      {/* WHITE PILL FLOATING TEXT FORMATTING TOOLBAR (Matches Video 00:10-00:18) */}
                       {isSelected && isTextObject && !showFormsMenu && !showMoreMenu && (
                         <div
                           data-testid="floating-text-toolbar"
@@ -3518,22 +4209,8 @@ export function PdfEditorWorkspace({
                           onClick={(e) => e.stopPropagation()}
                           className={`absolute left-0 ${
                             toolbarBelow ? 'top-full mt-2' : 'bottom-full mb-2'
-                          } z-50 flex items-center gap-1 bg-slate-950/95 border border-slate-700 rounded-xl px-2 py-1.5 shadow-2xl text-white whitespace-nowrap`}
+                          } z-50 flex items-center gap-1 bg-white border border-slate-200 rounded-xl px-2 py-1.5 shadow-xl text-slate-800 whitespace-nowrap`}
                         >
-                          {/* Drag Handle */}
-                          <div
-                            onMouseDown={(e) => {
-                              setEditingId(null);
-                              handleStartDrag(e, item);
-                            }}
-                            title="Drag to move text box anywhere on page"
-                            className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white cursor-move flex items-center"
-                          >
-                            <Move className="w-3.5 h-3.5" />
-                          </div>
-
-                          <div className="h-4 w-px bg-slate-800 mx-0.5" />
-
                           {/* Font Family */}
                           <select
                             aria-label="Font Family"
@@ -3543,15 +4220,15 @@ export function PdfEditorWorkspace({
                                 fontFamily: e.target.value as 'Helvetica' | 'TimesRoman' | 'Courier',
                               })
                             }
-                            className="bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] text-white focus:outline-none focus:border-red-500"
+                            className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-[11px] font-medium text-slate-800 focus:outline-none focus:border-blue-500"
                           >
-                            <option value="Helvetica">Sans (Helvetica)</option>
-                            <option value="TimesRoman">Serif (Times)</option>
-                            <option value="Courier">Mono (Courier)</option>
+                            <option value="Helvetica">Arial / Sans</option>
+                            <option value="TimesRoman">Times New Roman</option>
+                            <option value="Courier">Courier New</option>
                           </select>
 
                           {/* Font Size */}
-                          <div className="flex items-center bg-slate-900 border border-slate-700 rounded-lg">
+                          <div className="flex items-center bg-slate-50 border border-slate-200 rounded-lg">
                             <button
                               type="button"
                               onClick={() =>
@@ -3559,7 +4236,7 @@ export function PdfEditorWorkspace({
                                   fontSize: Math.max(6, (item.fontSize || 12) - 1),
                                 })
                               }
-                              className="px-1.5 py-0.5 text-slate-300 hover:text-white text-xs font-bold"
+                              className="px-1.5 py-0.5 text-slate-600 hover:text-slate-950 text-xs font-bold"
                               title="Decrease Font Size"
                             >
                               -
@@ -3575,7 +4252,7 @@ export function PdfEditorWorkspace({
                                   fontSize: Math.max(6, Math.min(72, Number(e.target.value) || 12)),
                                 })
                               }
-                              className="w-9 bg-transparent text-center text-[11px] font-mono text-white focus:outline-none"
+                              className="w-9 bg-transparent text-center text-[11px] font-mono text-slate-900 focus:outline-none"
                             />
                             <button
                               type="button"
@@ -3584,21 +4261,21 @@ export function PdfEditorWorkspace({
                                   fontSize: Math.min(72, (item.fontSize || 12) + 1),
                                 })
                               }
-                              className="px-1.5 py-0.5 text-slate-300 hover:text-white text-xs font-bold"
+                              className="px-1.5 py-0.5 text-slate-600 hover:text-slate-950 text-xs font-bold"
                               title="Increase Font Size"
                             >
                               +
                             </button>
                           </div>
 
-                          <div className="h-4 w-px bg-slate-800 mx-0.5" />
+                          <div className="h-4 w-px bg-slate-200 mx-0.5" />
 
-                          {/* Bold / Italic / Underline / Strikethrough */}
+                          {/* Bold / Italic / Underline */}
                           <button
                             type="button"
                             onClick={() => updateSelectedProperty({ isBold: !item.isBold })}
                             className={`p-1 rounded ${
-                              item.isBold ? 'bg-red-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+                              item.isBold ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
                             }`}
                             title="Bold"
                           >
@@ -3608,7 +4285,7 @@ export function PdfEditorWorkspace({
                             type="button"
                             onClick={() => updateSelectedProperty({ isItalic: !item.isItalic })}
                             className={`p-1 rounded ${
-                              item.isItalic ? 'bg-red-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+                              item.isItalic ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
                             }`}
                             title="Italic"
                           >
@@ -3618,68 +4295,18 @@ export function PdfEditorWorkspace({
                             type="button"
                             onClick={() => updateSelectedProperty({ isUnderline: !item.isUnderline })}
                             className={`p-1 rounded ${
-                              item.isUnderline ? 'bg-red-600 text-white' : 'text-slate-300 hover:bg-slate-800'
+                              item.isUnderline ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
                             }`}
                             title="Underline"
                           >
                             <UnderlineIcon className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => updateSelectedProperty({ isStrikethrough: !item.isStrikethrough })}
-                            className={`p-1 rounded ${
-                              item.isStrikethrough ? 'bg-red-600 text-white' : 'text-slate-300 hover:bg-slate-800'
-                            }`}
-                            title="Strikethrough"
-                          >
-                            <StrikethroughIcon className="w-3.5 h-3.5" />
-                          </button>
 
-                          <div className="h-4 w-px bg-slate-800 mx-0.5" />
-
-                          {/* Alignment */}
-                          <button
-                            type="button"
-                            onClick={() => updateSelectedProperty({ textAlign: 'left' })}
-                            className={`p-1 rounded ${
-                              (item.textAlign || 'left') === 'left'
-                                ? 'bg-slate-800 text-white'
-                                : 'text-slate-400 hover:text-white'
-                            }`}
-                            title="Align Left"
-                          >
-                            <AlignLeft className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => updateSelectedProperty({ textAlign: 'center' })}
-                            className={`p-1 rounded ${
-                              item.textAlign === 'center'
-                                ? 'bg-slate-800 text-white'
-                                : 'text-slate-400 hover:text-white'
-                            }`}
-                            title="Align Center"
-                          >
-                            <AlignCenter className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => updateSelectedProperty({ textAlign: 'right' })}
-                            className={`p-1 rounded ${
-                              item.textAlign === 'right'
-                                ? 'bg-slate-800 text-white'
-                                : 'text-slate-400 hover:text-white'
-                            }`}
-                            title="Align Right"
-                          >
-                            <AlignRight className="w-3.5 h-3.5" />
-                          </button>
-
-                          <div className="h-4 w-px bg-slate-800 mx-0.5" />
+                          <div className="h-4 w-px bg-slate-200 mx-0.5" />
 
                           {/* Text Color Input */}
                           <label
-                            className="flex items-center gap-1 cursor-pointer px-1 py-0.5 rounded hover:bg-slate-800"
+                            className="flex items-center gap-1 cursor-pointer px-1 py-0.5 rounded hover:bg-slate-100"
                             title="Text Color"
                           >
                             <input
@@ -3690,11 +4317,23 @@ export function PdfEditorWorkspace({
                             />
                           </label>
 
-                          {/* Delete / Clear Text */}
+                          {/* Drag Handle */}
+                          <div
+                            onMouseDown={(e) => {
+                              setEditingId(null);
+                              handleStartDrag(e, item);
+                            }}
+                            title="Drag to move text box"
+                            className="p-1 rounded hover:bg-slate-100 text-slate-600 hover:text-slate-900 cursor-move flex items-center"
+                          >
+                            <Move className="w-3.5 h-3.5" />
+                          </div>
+
+                          {/* Red Delete Trash Button */}
                           <button
                             type="button"
                             onClick={handleDeleteSelected}
-                            className="p-1 rounded text-red-400 hover:bg-red-950/60 hover:text-red-300"
+                            className="p-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white shadow-xs"
                             title={item.isExistingTextEdit ? 'Delete / Clear Text' : 'Delete Text Box'}
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -3702,7 +4341,37 @@ export function PdfEditorWorkspace({
                         </div>
                       )}
 
-                      {/* CONTEXTUAL FLOATING TOOLBAR FOR SIGNATURE & IMAGE OBJECTS */}
+                      {/* FLOATING ACTION BAR FOR REDACT / TRUE ERASER / STAMP / SHAPES */}
+                      {isSelected &&
+                        !isTextObject &&
+                        item.type !== 'signature' &&
+                        item.type !== 'image' &&
+                        !showFormsMenu &&
+                        !showMoreMenu && (
+                          <div
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
+                            className="absolute -top-9 left-0 z-50 flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-1.5 py-1 shadow-lg"
+                          >
+                            <div
+                              onMouseDown={(e) => handleStartDrag(e, item)}
+                              title="Move"
+                              className="p-1 rounded hover:bg-slate-100 text-slate-600 cursor-move"
+                            >
+                              <Move className="w-3.5 h-3.5" />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleDeleteSelected}
+                              className="p-1 rounded bg-red-500 hover:bg-red-600 text-white"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+
+                      {/* FLOATING TOOLBAR FOR SIGNATURE & IMAGE OBJECTS (Matches Video 00:49-01:03 Vertical + Top Actions) */}
                       {isSelected &&
                         (item.type === 'signature' || item.type === 'image') &&
                         !showFormsMenu &&
@@ -3711,18 +4380,39 @@ export function PdfEditorWorkspace({
                             data-testid="floating-signature-toolbar"
                             onMouseDown={(e) => e.stopPropagation()}
                             onClick={(e) => e.stopPropagation()}
-                            className={`absolute left-0 ${
-                              toolbarBelow ? 'top-full mt-2' : 'bottom-full mb-2'
-                            } z-50 flex items-center gap-1 bg-slate-950/95 border border-slate-700 rounded-xl px-2 py-1.5 shadow-2xl text-white whitespace-nowrap`}
+                            className="absolute -right-11 top-0 z-50 flex flex-col items-center gap-1 bg-white border border-slate-200 rounded-xl p-1 shadow-xl text-slate-700"
                           >
                             <div
                               onMouseDown={(e) => handleStartDrag(e, item)}
-                              title="Drag to move"
-                              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white cursor-move flex items-center"
+                              title="Move"
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-700 cursor-move"
                             >
                               <Move className="w-3.5 h-3.5" />
                             </div>
-                            <div className="h-4 w-px bg-slate-800 mx-0.5" />
+                            <button
+                              type="button"
+                              onClick={() => handleLayerOrderSelected('forward')}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-700"
+                              title="Bring Forward"
+                            >
+                              <ArrowUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleLayerOrderSelected('backward')}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-700"
+                              title="Send Backward"
+                            >
+                              <ArrowDown className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDuplicateSelected}
+                              className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-700"
+                              title="Duplicate"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
                             {item.type === 'signature' ? (
                               <button
                                 type="button"
@@ -3731,90 +4421,28 @@ export function PdfEditorWorkspace({
                                   setReplacingSignatureTargetId(item.id);
                                   setShowSignaturePad(true);
                                 }}
-                                className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold flex items-center gap-1"
-                                title="Open Signature Studio to type, draw, upload, or pick another signature"
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-blue-600"
+                                title="Change Signature"
                               >
-                                <PenTool className="w-3 h-3" />
-                                Change Signature
+                                <PenTool className="w-3.5 h-3.5" />
                               </button>
                             ) : (
                               <button
                                 type="button"
                                 onClick={() => {
                                   setReplacingImageTargetId(item.id);
-                                  imageInputRef.current?.click();
+                                  setShowImageUploadModal(true);
                                 }}
-                                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-[11px] font-bold flex items-center gap-1"
+                                className="p-1.5 rounded-lg hover:bg-slate-100 text-blue-600"
+                                title="Replace Image"
                               >
-                                <Upload className="w-3 h-3" />
-                                Replace Image
+                                <Upload className="w-3.5 h-3.5" />
                               </button>
                             )}
                             <button
                               type="button"
-                              onClick={() =>
-                                updateSelectedProperty({
-                                  aspectRatioLocked: !item.aspectRatioLocked,
-                                })
-                              }
-                              className={`px-1.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 ${
-                                item.aspectRatioLocked
-                                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-600/40'
-                                  : 'bg-slate-900 text-slate-400 hover:text-white'
-                              }`}
-                              title="Toggle Aspect Ratio Lock when resizing corners"
-                            >
-                              {item.aspectRatioLocked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
-                              <span>Ratio</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateSelectedProperty({
-                                  rotationDeg: (((item.rotationDeg || 0) - 15 + 360) % 360),
-                                })
-                              }
-                              className="px-1.5 py-1 rounded hover:bg-slate-800 text-[11px] font-semibold text-slate-300 hover:text-white"
-                              title="Rotate Counter-Clockwise (-15°)"
-                            >
-                              -15°
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateSelectedProperty({
-                                  rotationDeg: (((item.rotationDeg || 0) + 15) % 360),
-                                })
-                              }
-                              className="px-1.5 py-1 rounded hover:bg-slate-800 text-[11px] font-semibold text-slate-300 hover:text-white"
-                              title="Rotate Clockwise (+15°)"
-                            >
-                              +15°
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                updateSelectedProperty({
-                                  rotationDeg: (((item.rotationDeg || 0) + 90) % 360),
-                                })
-                              }
-                              className="p-1 rounded hover:bg-slate-800 text-slate-300 hover:text-white"
-                              title="Rotate +90°"
-                            >
-                              <RotateCw className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={handleDuplicateSelected}
-                              className="p-1 rounded hover:bg-slate-800 text-slate-300 hover:text-white"
-                              title="Duplicate"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
                               onClick={handleDeleteSelected}
-                              className="p-1 rounded text-red-400 hover:bg-red-950/60 hover:text-red-300"
+                              className="p-1.5 rounded-lg bg-red-500 hover:bg-red-600 text-white"
                               title="Delete"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -3844,6 +4472,7 @@ export function PdfEditorWorkspace({
                             <textarea
                               ref={activeEditorInputRef}
                               data-testid="in-place-text-input"
+                              spellCheck={true}
                               value={item.text ?? ''}
                               onChange={(e) => {
                                 const nextText = e.target.value;
@@ -4307,27 +4936,179 @@ export function PdfEditorWorkspace({
           )}
         </main>
 
-        {/* RIGHT INSPECTOR PANEL: DYNAMIC PROPERTIES BASED ON SELECTED ELEMENT OR ACTIVE TOOL */}
+        {/* RIGHT PAGE THUMBNAILS SIDEBAR (PDFSimpli style: clean white right sidebar with blue active page frame & dark square toggle button) */}
         {pdfBytes && (
           <aside
-            className={`${
-              isInspectorOpen ? 'w-72' : 'w-10'
-            } bg-slate-950 border-l border-slate-800 flex flex-col transition-all duration-200 shrink-0 z-10`}
+            data-testid="page-thumbnail-sidebar"
+            className={`relative ${
+              isSidebarOpen ? 'w-[128px]' : 'w-10'
+            } bg-white border-l border-slate-200 flex flex-col transition-all duration-200 shrink-0 z-10`}
           >
+            {/* Dark square toggle button on top-left edge matching PDFSimpli */}
+            <div className="p-2 border-b border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => setIsSidebarOpen((prev) => !prev)}
+                className="w-7 h-7 rounded bg-[#1E293B] hover:bg-slate-800 text-white flex items-center justify-center shadow-xs transition-colors"
+                title={isSidebarOpen ? 'Collapse Page Thumbnails' : 'Expand Page Thumbnails'}
+              >
+                <FileText className="w-3.5 h-3.5" />
+              </button>
+              {isSidebarOpen && (
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handleInsertBlankPageAfter(activePage)}
+                    className="p-1 rounded hover:bg-slate-100 text-slate-600 hover:text-slate-900"
+                    title="Insert Blank Page"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsInspectorOpen((prev) => !prev)}
+                    className={`p-1 rounded transition-colors ${
+                      isInspectorOpen
+                        ? 'bg-slate-900 text-white'
+                        : 'hover:bg-slate-100 text-slate-600 hover:text-slate-900'
+                    }`}
+                    title={isInspectorOpen ? 'Close Advanced Inspector' : 'Open Advanced Inspector'}
+                  >
+                    <Sliders className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {isSidebarOpen ? (
+              <div className="flex-1 overflow-y-auto p-2.5 space-y-3">
+                {visibleThumbnails.map((thumb, seqIdx) => {
+                  const pageNum = thumb.pageNumber;
+                  const thumbUrl = thumb.dataUrl;
+                  const isCurrent = pageNum === activePage;
+                  const pageItemCount = annotations.filter((a) => a.pageNumber === pageNum).length;
+
+                  return (
+                    <div
+                      key={`${seqIdx}_${pageNum}`}
+                      data-testid={`page-thumbnail-${seqIdx + 1}`}
+                      onClick={() => {
+                        setActivePage(pageNum);
+                        setSelectedId(null);
+                        setEditingId(null);
+                      }}
+                      className="group cursor-pointer flex flex-col items-center"
+                    >
+                      <div
+                        className={`relative w-full rounded bg-white p-1 transition-all ${
+                          isCurrent
+                            ? 'border-2 border-blue-600 shadow-sm'
+                            : 'border border-slate-200 hover:border-slate-400'
+                        }`}
+                      >
+                        <div className="relative aspect-[1/1.38] bg-white rounded-xs overflow-hidden flex items-center justify-center">
+                          {thumbUrl ? (
+                            <img
+                              src={thumbUrl}
+                              alt={`Page ${seqIdx + 1}`}
+                              className="w-full h-full object-contain"
+                            />
+                          ) : (
+                            <span className="text-[10px] text-slate-400">Page {seqIdx + 1}</span>
+                          )}
+                          {pageItemCount > 0 && (
+                            <span className="absolute top-1 right-1 px-1 py-0.2 rounded bg-blue-600 text-white text-[8px] font-bold">
+                              {pageItemCount}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Quick page hover actions */}
+                        <div
+                          className="mt-1 flex items-center justify-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={(e) => handleRotateCurrentPage(pageNum, e)}
+                            className="p-0.5 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-900"
+                            title="Rotate 90°"
+                          >
+                            <RotateCw className="w-2.5 h-2.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDuplicatePage(seqIdx, pageNum, e)}
+                            className="p-0.5 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-900"
+                            title="Duplicate Page"
+                          >
+                            <Copy className="w-2.5 h-2.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleRequestDeletePage(pageNum, e)}
+                            className="p-0.5 rounded hover:bg-red-50 text-slate-500 hover:text-red-600"
+                            title="Delete Page"
+                          >
+                            <Trash2 className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <span
+                        className={`mt-1 text-[11px] font-semibold ${
+                          isCurrent ? 'text-blue-600 font-bold' : 'text-slate-600'
+                        }`}
+                      >
+                        {seqIdx + 1}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center py-2 gap-1.5 overflow-y-auto">
+                {visibleThumbnails.map((thumb, seqIdx) => {
+                  const pageNum = thumb.pageNumber;
+                  return (
+                    <button
+                      key={`${seqIdx}_${pageNum}`}
+                      type="button"
+                      data-testid={`page-thumbnail-${seqIdx + 1}`}
+                      onClick={() => {
+                        setActivePage(pageNum);
+                        setSelectedId(null);
+                        setEditingId(null);
+                      }}
+                      className={`w-7 h-7 rounded text-[11px] font-bold transition-colors ${
+                        pageNum === activePage
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {seqIdx + 1}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </aside>
+        )}
+
+        {/* OPTIONAL ADVANCED INSPECTOR DRAWER */}
+        {pdfBytes && isInspectorOpen && (
+          <aside className="w-72 bg-slate-950 border-l border-slate-800 flex flex-col transition-all duration-200 shrink-0 z-10">
             <div className="p-2 border-b border-slate-800 flex items-center justify-between">
               <button
                 type="button"
-                onClick={() => setIsInspectorOpen((prev) => !prev)}
+                onClick={() => setIsInspectorOpen(false)}
                 className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white"
-                title={isInspectorOpen ? 'Collapse Inspector' : 'Expand Inspector'}
+                title="Close Inspector"
               >
-                {isInspectorOpen ? <ChevronRight className="w-4 h-4" /> : < Sliders className="w-4 h-4" />}
+                <ChevronRight className="w-4 h-4" />
               </button>
-              {isInspectorOpen && (
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1">
-                  Inspector & Properties
-                </span>
-              )}
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1">
+                Inspector &amp; Properties
+              </span>
             </div>
 
             {isInspectorOpen && (
@@ -5763,6 +6544,190 @@ export function PdfEditorWorkspace({
                 className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-xs font-bold text-white transition-colors shadow-lg shadow-red-600/20"
               >
                 {confirmDeleteModal.isOnlyPage ? 'Close Document' : `Delete Page ${confirmDeleteModal.pageNum}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SELECT STAMP MODAL (matching PDFSimpli 3x3 color-coded stamp grid) */}
+      {showStampModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid="select-stamp-modal"
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-lg font-bold text-slate-900">Select stamp</h3>
+              <button
+                type="button"
+                onClick={() => setShowStampModal(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              {STUDIO_STAMPS.map((st) => (
+                <button
+                  key={st.label}
+                  type="button"
+                  data-testid={`stamp-option-${st.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+                  onClick={() => handlePlaceStampFromModal(st.label, st.colorHex)}
+                  className="p-3 rounded-xl border border-slate-200 hover:border-slate-400 hover:bg-slate-50 transition-all flex items-center justify-center"
+                >
+                  <span
+                    className="px-2.5 py-1.5 border-2 rounded font-extrabold text-xs tracking-wider uppercase text-center leading-tight"
+                    style={{
+                      borderColor: st.colorHex,
+                      color: st.colorHex,
+                      backgroundColor: `${st.colorHex}10`,
+                    }}
+                  >
+                    {st.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* UPLOAD YOUR IMAGE MODAL (matching PDFSimpli Add Images modal) */}
+      {showImageUploadModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid="upload-image-modal"
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-lg font-bold text-slate-900">Upload your image</h3>
+              <button
+                type="button"
+                onClick={() => setShowImageUploadModal(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const dropped = e.dataTransfer?.files?.[0];
+                if (dropped && dropped.type.startsWith('image/')) {
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+                    if (!dataUrl) return;
+                    const newItem: EditorAnnotationItem = {
+                      id: createAnnotationId(),
+                      pageNumber: activePage,
+                      type: 'image',
+                      xPercent: 30,
+                      yPercent: 35,
+                      widthPercent: 25,
+                      heightPercent: 18,
+                      imageDataUrl: dataUrl,
+                      opacity: 1,
+                    };
+                    const next = [...annotations, newItem];
+                    pushAnnotationsState(next);
+                    setSelectedId(newItem.id);
+                    setActiveTool('select');
+                    setShowImageUploadModal(false);
+                  };
+                  reader.readAsDataURL(dropped);
+                }
+              }}
+              className="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-2xl p-8 flex flex-col items-center justify-center text-center gap-3 bg-slate-50/70 transition-colors"
+            >
+              <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center">
+                <ImageIcon className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-slate-700">Drag and drop an image here</p>
+                <p className="text-xs text-slate-500">Supports PNG, JPG, WEBP, SVG</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowImageUploadModal(false);
+                  imageInputRef.current?.click();
+                }}
+                className="mt-2 px-5 py-2.5 rounded-full bg-[#2563EB] hover:bg-blue-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                Upload Images
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* HOW WOULD YOU LIKE TO SIGN THIS DOCUMENT MODAL (matching PDFSimpli Sign category flow) */}
+      {showSignChoiceModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid="sign-choice-modal"
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="text-lg font-bold text-slate-900">How would you like to sign this document?</h3>
+              <button
+                type="button"
+                onClick={() => setShowSignChoiceModal(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <button
+                type="button"
+                data-testid="sign-my-own-document-button"
+                onClick={() => {
+                  setShowSignChoiceModal(false);
+                  setReplacingSignatureTargetId(null);
+                  setShowSignaturePad(true);
+                }}
+                className="p-5 rounded-2xl border-2 border-slate-200 hover:border-blue-600 hover:bg-blue-50/40 transition-all flex flex-col items-center text-center gap-2.5 group"
+              >
+                <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 group-hover:bg-blue-600 group-hover:text-white flex items-center justify-center transition-colors">
+                  <PenTool className="w-6 h-6" />
+                </div>
+                <span className="text-sm font-bold text-slate-900">Sign my own document</span>
+                <span className="text-xs text-slate-500">
+                  Type, draw, or upload your signature or initials directly on this PDF
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="send-document-to-sign-button"
+                onClick={() => {
+                  setShowSignChoiceModal(false);
+                  setShareFormTitle(fileName.replace(/\.pdf$/i, '') || 'Interactive Document');
+                  setCreatedShareUrl('');
+                  setShowShareFormModal(true);
+                }}
+                className="p-5 rounded-2xl border-2 border-slate-200 hover:border-blue-600 hover:bg-blue-50/40 transition-all flex flex-col items-center text-center gap-2.5 group"
+              >
+                <div className="w-12 h-12 rounded-xl bg-orange-50 text-[#F45B2A] group-hover:bg-[#F45B2A] group-hover:text-white flex items-center justify-center transition-colors">
+                  <Share2 className="w-6 h-6" />
+                </div>
+                <span className="text-sm font-bold text-slate-900">Send document to sign</span>
+                <span className="text-xs text-slate-500">
+                  Create a shareable Fill &amp; Sign link for others to complete and sign online
+                </span>
               </button>
             </div>
           </div>

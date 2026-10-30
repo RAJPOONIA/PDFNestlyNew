@@ -91,7 +91,7 @@ export function PdfToolRunner({ tool }: PdfToolRunnerProps) {
   if (tool.slug === 'edit-pdf' || tool.slug === 'sign-pdf') {
     return (
       <PdfEditorWorkspace
-        defaultTool={tool.slug === 'sign-pdf' ? 'signature' : 'text'}
+        defaultTool={tool.slug === 'sign-pdf' ? 'signature' : 'select'}
       />
     );
   }

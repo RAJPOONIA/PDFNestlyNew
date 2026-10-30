@@ -2262,7 +2262,7 @@ export async function applyEditorAnnotationsToPdf(
           const ry = (rItem.yPercent / 100) * canvas.height;
           const rw = (rItem.widthPercent / 100) * canvas.width;
           const rh = (rItem.heightPercent / 100) * canvas.height;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = rItem.colorHex || '#000000';
           ctx.fillRect(rx, ry, rw, rh);
         }
       }
@@ -2323,12 +2323,13 @@ export async function applyEditorAnnotationsToPdf(
         const boxH = (rItem.heightPercent / 100) * height;
         const pdfX = (rItem.xPercent / 100) * width;
         const pdfY = height - (rItem.yPercent / 100) * height - boxH;
+        const [rr, rg, rb] = hexToRgbTuple(rItem.colorHex || '#000000');
         cleanPage.drawRectangle({
           x: pdfX,
           y: pdfY,
           width: boxW,
           height: boxH,
-          color: rgb(0, 0, 0),
+          color: rgb(rr, rg, rb),
           opacity: 1,
         });
       }

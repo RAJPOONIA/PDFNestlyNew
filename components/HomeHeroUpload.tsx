@@ -61,13 +61,13 @@ export function HomeHeroUpload() {
         return;
       }
 
-      // Store in shared IndexedDB store so all tools and PDFNestly Studio can immediately access it
+      // Store in shared IndexedDB store so PDFNestly Studio immediately opens it
       await storeCurrentDocument(file, 'homepage-upload');
       setSelectedFile(file);
+      router.push('/edit-pdf');
     } catch {
       setError('Failed to read and validate the PDF. The file may be locked or corrupted.');
       setSelectedFile(null);
-    } finally {
       setIsValidating(false);
     }
   };
@@ -126,6 +126,7 @@ export function HomeHeroUpload() {
       >
         <input
           ref={fileInputRef}
+          data-testid="home-hero-pdf-input"
           type="file"
           accept=".pdf,application/pdf"
           className="hidden"
@@ -140,21 +141,22 @@ export function HomeHeroUpload() {
 
             <div>
               <h3 className="text-lg sm:text-xl font-bold text-[#18181B] dark:text-[#FAFAFA]">
-                Drop your PDF here, or browse files
+                Drop your PDF here to open in PDFNestly Studio
               </h3>
               <p className="text-sm text-[#52525B] dark:text-[#D4D4D8] mt-1">
-                Client-side processing for private docs. Files never leave your browser without permission.
+                Upload any PDF document to launch directly into the full-screen PDFNestly Studio editor.
               </p>
             </div>
 
-            <div className="flex items-center justify-center pt-2">
+            <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
               <button
                 type="button"
+                data-testid="home-upload-pdf-button"
                 onClick={() => fileInputRef.current?.click()}
                 className="px-7 py-3.5 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] active:bg-[#7F1D1D] text-white font-semibold text-sm transition-colors shadow-sm flex items-center gap-2.5 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#B91C1C]"
               >
                 <FileText className="w-4 h-4" />
-                Choose PDF File
+                Upload PDF & Open Studio
               </button>
             </div>
 
