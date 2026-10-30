@@ -37,6 +37,8 @@ import {
   Sliders,
   MoreVertical,
   Maximize2,
+  Minimize2,
+  Pencil,
   FileDown,
   RefreshCw,
   X,
@@ -94,6 +96,7 @@ export type EditorToolMode =
   | 'underline'
   | 'strikethrough'
   | 'shape'
+  | 'drawing'
   | 'comment'
   | 'stamp'
   | 'watermark'
@@ -277,6 +280,13 @@ export function PdfEditorWorkspace({
   const [sampledBgColors, setSampledBgColors] = useState<Record<string, string>>({});
   const [stampPreset, setStampPreset] = useState<string>('APPROVED');
 
+  // Fullscreen & Freehand Drawing state
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isDrawingFreehand, setIsDrawingFreehand] = useState<boolean>(false);
+  const [freehandPoints, setFreehandPoints] = useState<Array<{ xPct: number; yPct: number }>>([]);
+  const [drawingColorHex, setDrawingColorHex] = useState<string>('#dc2626');
+  const [drawingStrokeWidth, setDrawingStrokeWidth] = useState<number>(3);
+
   // Tool behavior & Forms state
   const [keepToolActive, setKeepToolActive] = useState<boolean>(false);
   const [showFormsMenu, setShowFormsMenu] = useState<boolean>(false);
@@ -400,6 +410,27 @@ export function PdfEditorWorkspace({
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
+
+  // Track browser fullscreen state
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // Ignore fullscreen permission errors in restricted contexts
+    }
+  }, []);
 
   // Push a new snapshot to unified history
   const pushSnapshot = useCallback(
@@ -1643,6 +1674,13 @@ export function PdfEditorWorkspace({
     const mouseXPct = ((e.clientX - rect.left) / rect.width) * 100;
     const mouseYPct = ((e.clientY - rect.top) / rect.height) * 100;
 
+    if (isDrawingFreehand && activeTool === 'drawing') {
+      const clampedX = Math.max(0, Math.min(100, mouseXPct));
+      const clampedY = Math.max(0, Math.min(100, mouseYPct));
+      setFreehandPoints((prev) => [...prev, { xPct: clampedX, yPct: clampedY }]);
+      return;
+    }
+
     if (cropAction && activeTool === 'crop') {
       const dx = mouseXPct - cropAction.startX;
       const dy = mouseYPct - cropAction.startY;
@@ -1766,7 +1804,74 @@ export function PdfEditorWorkspace({
     }
   };
 
+  const handleFreehandMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (activeTool !== 'drawing' || !canvasRef.current) return;
+    e.stopPropagation();
+    const rect = canvasRef.current.getBoundingClientRect();
+    const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+    const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+    setIsDrawingFreehand(true);
+    setFreehandPoints([{ xPct, yPct }]);
+  };
+
   const handleCanvasMouseUp = () => {
+    if (isDrawingFreehand && activeTool === 'drawing') {
+      setIsDrawingFreehand(false);
+      if (freehandPoints.length >= 2 && pageDimensions.width > 0 && pageDimensions.height > 0) {
+        const xs = freehandPoints.map((p) => p.xPct);
+        const ys = freehandPoints.map((p) => p.yPct);
+        const padPct = 1.5;
+        const minX = Math.max(0, Math.min(...xs) - padPct);
+        const maxX = Math.min(100, Math.max(...xs) + padPct);
+        const minY = Math.max(0, Math.min(...ys) - padPct);
+        const maxY = Math.min(100, Math.max(...ys) + padPct);
+        const widthPct = Math.max(2.5, maxX - minX);
+        const heightPct = Math.max(2.5, maxY - minY);
+
+        const dpiScale = 2;
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = Math.max(24, Math.round((widthPct / 100) * pageDimensions.width * dpiScale));
+        offCanvas.height = Math.max(24, Math.round((heightPct / 100) * pageDimensions.height * dpiScale));
+        const ctx = offCanvas.getContext('2d');
+        if (ctx) {
+          ctx.strokeStyle = drawingColorHex;
+          ctx.lineWidth = drawingStrokeWidth * dpiScale;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          freehandPoints.forEach((pt, idx) => {
+            const localX = ((pt.xPct - minX) / widthPct) * offCanvas.width;
+            const localY = ((pt.yPct - minY) / heightPct) * offCanvas.height;
+            if (idx === 0) ctx.moveTo(localX, localY);
+            else ctx.lineTo(localX, localY);
+          });
+          ctx.stroke();
+
+          const dataUrl = offCanvas.toDataURL('image/png');
+          const newId = `draw_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const newDrawingItem: EditorAnnotationItem = {
+            id: newId,
+            pageNumber: activePage,
+            type: 'image',
+            xPercent: roundPct(minX),
+            yPercent: roundPct(minY),
+            widthPercent: roundPct(widthPct),
+            heightPercent: roundPct(heightPct),
+            imageDataUrl: dataUrl,
+            aspectRatioLocked: true,
+            opacity: 1,
+            rotationDeg: 0,
+          };
+          pushAnnotationsState([...annotations, newDrawingItem]);
+          setSelectedId(newId);
+          setStatusMessage(`Added freehand drawing on Page ${activePage}.`);
+          if (!keepToolActive) {
+            setActiveTool('select');
+          }
+        }
+      }
+      setFreehandPoints([]);
+    }
     setDraggingId(null);
     setResizingId(null);
     setResizeHandle(null);
@@ -2207,7 +2312,8 @@ export function PdfEditorWorkspace({
 
   return (
     <div
-      className="flex flex-col h-[calc(100vh-4rem)] min-h-[640px] bg-slate-900 text-slate-100 rounded-2xl overflow-hidden border border-slate-800 shadow-2xl select-none"
+      data-testid="pdf-editor-standalone-app"
+      className="flex flex-col h-screen w-full bg-slate-950 text-slate-100 overflow-hidden select-none"
       onMouseUp={handleCanvasMouseUp}
     >
       {/* Hidden File Inputs */}
@@ -2226,27 +2332,33 @@ export function PdfEditorWorkspace({
         onChange={handleImageFileSelect}
       />
 
-      {/* TOP BAR */}
-      <header className="bg-slate-950 border-b border-slate-800 px-3 py-2 flex items-center justify-between gap-2 shrink-0 z-40">
-        {/* Left: Brand & File Title */}
-        <div className="flex items-center gap-2.5 min-w-0">
-          <Link
-            href="/"
-            className="flex items-center gap-2 px-2 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 transition-colors shrink-0"
-            title="Back to PDFNestly Home"
-          >
+      {/* TIER 1: STANDALONE STUDIO APPLICATION HEADER */}
+      <header
+        data-testid="studio-app-header"
+        className="bg-slate-950 border-b border-slate-800/90 px-4 py-2 flex items-center justify-between gap-3 shrink-0 z-40"
+      >
+        {/* Left: PDFNestly Studio Logo/Name, Document Filename, Page Count & Save Status */}
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 shrink-0">
             <PdfNestlyMark className="w-5 h-5 rounded" />
-            <span className="font-bold text-xs tracking-tight text-white hidden sm:inline">PDFNestly Studio</span>
-          </Link>
+            <span className="font-bold text-xs tracking-tight text-white">PDFNestly Studio</span>
+          </div>
 
           {pdfBytes && (
-            <div className="flex items-center gap-2 min-w-0 bg-slate-900/90 border border-slate-800/80 px-2.5 py-1 rounded-lg">
+            <div className="flex items-center gap-2.5 min-w-0 bg-slate-900/90 border border-slate-800/80 px-3 py-1 rounded-lg">
               <FileText className="w-3.5 h-3.5 text-red-400 shrink-0" />
-              <span className="text-xs font-semibold text-white truncate max-w-[140px] md:max-w-[200px]" title={fileName}>
+              <span
+                data-testid="studio-document-filename"
+                className="text-xs font-semibold text-white truncate max-w-[160px] md:max-w-[260px]"
+                title={fileName}
+              >
                 {fileName}
               </span>
-              <span className="text-[11px] text-slate-400 shrink-0 hidden md:inline">
-                ({visibleThumbnails.length} {visibleThumbnails.length === 1 ? 'pg' : 'pgs'})
+              <span
+                data-testid="studio-document-page-count"
+                className="text-[11px] font-medium text-slate-400 shrink-0 border-l border-slate-800 pl-2"
+              >
+                {visibleThumbnails.length} {visibleThumbnails.length === 1 ? 'Page' : 'Pages'}
               </span>
 
               {/* Honest Save Status Badge */}
@@ -2286,17 +2398,192 @@ export function PdfEditorWorkspace({
           )}
         </div>
 
-        {/* Center: Primary Tools + Forms Dropdown */}
-        <div className="flex items-center gap-0.5 py-0.5 flex-wrap">
+        {/* Right: Undo, Redo, Fullscreen, Save, More Document Actions, Export PDF */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Undo / Redo */}
+          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={historyIdx <= 0}
+              className="p-1.5 text-slate-300 hover:text-white disabled:opacity-30 transition-colors"
+              title="Undo (Ctrl+Z)"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleRedo}
+              disabled={historyIdx >= history.length - 1}
+              className="p-1.5 text-slate-300 hover:text-white disabled:opacity-30 transition-colors"
+              title="Redo (Ctrl+Y)"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Fullscreen Toggle Button */}
+          <button
+            type="button"
+            data-testid="studio-fullscreen-button"
+            onClick={handleToggleFullscreen}
+            className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-colors"
+            title={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+          >
+            {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+          </button>
+
+          {/* Save to Workspace button */}
+          {pdfBytes && (
+            <button
+              type="button"
+              onClick={handleSaveToWorkspace}
+              disabled={isSavingWorkspace || !hasUnsavedChanges}
+              className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                hasUnsavedChanges
+                  ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700'
+                  : 'bg-slate-900 text-slate-500 border-slate-800 cursor-default'
+              }`}
+              title="Save current edits in browser workspace"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>{isSavingWorkspace ? 'Saving...' : 'Save'}</span>
+            </button>
+          )}
+
+          {/* More Document Actions Dropdown */}
+          <div className="relative">
+            <button
+              type="button"
+              data-testid="studio-more-actions-button"
+              onClick={() => setShowMoreMenu((prev) => !prev)}
+              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-colors"
+              title="More Document Actions"
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
+            {showMoreMenu && (
+              <div
+                className="absolute right-0 mt-1.5 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 z-50 text-xs"
+                onMouseLeave={() => setShowMoreMenu(false)}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    fileInputRef.current?.click();
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                >
+                  <Upload className="w-3.5 h-3.5 text-slate-400" />
+                  Replace PDF Document
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    handleLoadSample();
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  Load 4-Page Sample PDF
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    setActiveTool('watermark');
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                >
+                  <Layers className="w-3.5 h-3.5 text-sky-400" />
+                  Add Page Watermark
+                </button>
+                {pdfBytes && (
+                  <>
+                    <div className="my-1 border-t border-slate-800" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        handleInsertBlankPageAfter(activePage);
+                      }}
+                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                    >
+                      <FilePlus2 className="w-3.5 h-3.5 text-emerald-400" />
+                      Insert Blank Page After P.{activePage}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        handleExtractSinglePage(activePage);
+                      }}
+                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                    >
+                      <Scissors className="w-3.5 h-3.5 text-purple-400" />
+                      Extract Page {activePage} as PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        handleRotateCurrentPage(activePage);
+                      }}
+                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
+                    >
+                      <RotateCw className="w-3.5 h-3.5 text-slate-400" />
+                      Rotate Current Page (+90°)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        handleRequestDeletePage(activePage);
+                      }}
+                      className="w-full px-3.5 py-2 text-left text-red-400 hover:bg-slate-800 flex items-center gap-2.5"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {visibleThumbnails.length <= 1 ? 'Close / Clear Document' : 'Delete Current Page'}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Primary Export PDF Button */}
+          <button
+            type="button"
+            data-testid="studio-export-pdf-button"
+            onClick={handleExportPdf}
+            disabled={!pdfBytes || isExporting}
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-xs font-bold text-white transition-colors shadow-sm"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>{isExporting ? 'Exporting...' : 'Export PDF'}</span>
+          </button>
+        </div>
+      </header>
+
+      {/* TIER 2: STICKY EDITING TOOLBAR */}
+      <div
+        data-testid="studio-editing-toolbar"
+        className="bg-slate-900/95 border-b border-slate-800 px-3 py-1 flex items-center justify-between gap-1 shrink-0 z-30"
+      >
+        {/* Left / Center: Editing Tools + Forms Dropdown + Keep Active */}
+        <div className="flex items-center gap-0.5 py-0.5 flex-nowrap">
           {[
-            { id: 'select', label: 'Select / Edit', icon: MousePointer, hint: 'Click any text on canvas to edit in-place, or drag objects' },
-            { id: 'pan', label: 'Hand', icon: Hand, hint: 'Pan around zoomed page' },
+            { id: 'select', label: 'Pointer', icon: MousePointer, hint: 'Select / Pointer: Click any text on canvas to edit in-place, or drag objects' },
+            { id: 'pan', label: 'Hand', icon: Hand, hint: 'Hand / Pan around zoomed page' },
             { id: 'existing-text', label: 'Edit Text', icon: RefreshCw, hint: 'Highlight & edit existing PDF text in-place' },
             { id: 'text', label: 'Add Text', icon: Type, hint: 'Click anywhere on page to insert new text' },
             { id: 'highlight', label: 'Highlight', icon: Highlighter, hint: 'Highlight text or area' },
             { id: 'underline', label: 'Underline', icon: UnderlineIcon, hint: 'Underline text' },
             { id: 'strikethrough', label: 'Strikeout', icon: StrikethroughIcon, hint: 'Strikethrough text' },
             { id: 'shape', label: 'Shapes', icon: Square, hint: 'Draw rectangles, ellipses, lines, or arrows' },
+            { id: 'drawing', label: 'Drawing', icon: Pencil, hint: 'Freehand drawing tool on page' },
             { id: 'image', label: 'Image', icon: ImageIcon, hint: 'Insert PNG, JPG, or WebP image' },
             { id: 'signature', label: 'Sign', icon: PenTool, hint: 'Draw, type, or upload signature' },
             { id: 'crop', label: 'Crop', icon: Crop, hint: 'Drag crop handles on canvas to crop page' },
@@ -2310,6 +2597,7 @@ export function PdfEditorWorkspace({
               <button
                 key={tool.id}
                 type="button"
+                data-testid={`studio-tool-${tool.id}`}
                 title={tool.hint}
                 onClick={() => {
                   setEditingId(null);
@@ -2324,28 +2612,28 @@ export function PdfEditorWorkspace({
                     imageInputRef.current?.click();
                   }
                 }}
-                className={`flex items-center gap-1 px-1.5 py-1.5 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+                className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[10.5px] font-semibold transition-all shrink-0 whitespace-nowrap ${
                   active
                     ? 'bg-red-600 text-white shadow-sm'
                     : 'text-slate-300 hover:text-white hover:bg-slate-800'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" />
-                <span className="hidden 2xl:inline">{tool.label}</span>
+                <Icon className="w-3 h-3 shrink-0" />
+                <span className="hidden xl:inline">{tool.label}</span>
               </button>
             );
           })}
 
           {/* SEJDA-STYLE FORMS & SYMBOLS MENU */}
-          <div className="relative">
+          <div className="relative shrink-0">
             <button
               type="button"
               data-testid="forms-menu-button"
               onClick={() => setShowFormsMenu((prev) => !prev)}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all shrink-0 border ${
+              className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[10.5px] font-semibold transition-all shrink-0 border whitespace-nowrap ${
                 activeTool.startsWith('form-') || activeTool.startsWith('symbol-') || showFormsMenu
                   ? 'bg-red-600 text-white border-red-500 shadow-sm'
-                  : 'bg-slate-900 text-slate-200 border-slate-800 hover:bg-slate-800 hover:text-white'
+                  : 'bg-slate-950 text-slate-200 border-slate-800 hover:bg-slate-800 hover:text-white'
               }`}
               title="Interactive PDF Forms, Checkmarks & Fillable Fields"
             >
@@ -2492,10 +2780,10 @@ export function PdfEditorWorkspace({
             type="button"
             data-testid="keep-tool-active-toggle"
             onClick={() => setKeepToolActive((prev) => !prev)}
-            className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors shrink-0 ${
+            className={`flex items-center gap-1 px-1.5 py-1 rounded-md text-[11px] font-semibold border transition-colors shrink-0 whitespace-nowrap ${
               keepToolActive
                 ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
-                : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
             }`}
             title="Keep selected tool active after placing an element on the page"
           >
@@ -2504,46 +2792,26 @@ export function PdfEditorWorkspace({
           </button>
         </div>
 
-        {/* Right: Find, Undo/Redo, Save, Zoom, More, Export */}
+        {/* Right: Find & Replace + Zoom / Fit Controls */}
         <div className="flex items-center gap-1.5 shrink-0">
           {/* Find & Replace toggle */}
           <button
             type="button"
+            data-testid="studio-find-replace-button"
             onClick={() => setShowFindBar((prev) => !prev)}
-            className={`p-1.5 rounded-lg border transition-colors ${
+            className={`flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-semibold transition-colors whitespace-nowrap ${
               showFindBar
                 ? 'bg-red-600/20 border-red-500/50 text-red-300'
-                : 'bg-slate-900 border-slate-800 text-slate-300 hover:text-white'
+                : 'bg-slate-950 border-slate-800 text-slate-300 hover:text-white'
             }`}
             title="Find & Replace Text (Ctrl+F)"
           >
             <Search className="w-3.5 h-3.5" />
+            <span className="hidden 2xl:inline">Find & Replace</span>
           </button>
 
-          {/* Undo / Redo */}
-          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
-            <button
-              type="button"
-              onClick={handleUndo}
-              disabled={historyIdx <= 0}
-              className="p-1.5 text-slate-300 hover:text-white disabled:opacity-30 transition-colors"
-              title="Undo (Ctrl+Z)"
-            >
-              <Undo2 className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              onClick={handleRedo}
-              disabled={historyIdx >= history.length - 1}
-              className="p-1.5 text-slate-300 hover:text-white disabled:opacity-30 transition-colors"
-              title="Redo (Ctrl+Y)"
-            >
-              <Redo2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
           {/* Zoom Controls */}
-          <div className="hidden lg:flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+          <div className="hidden md:flex items-center bg-slate-950 rounded-lg p-0.5 border border-slate-800">
             <button
               type="button"
               onClick={() => {
@@ -2590,138 +2858,8 @@ export function PdfEditorWorkspace({
               Width
             </button>
           </div>
-
-          {/* Save to Workspace button */}
-          {pdfBytes && (
-            <button
-              type="button"
-              onClick={handleSaveToWorkspace}
-              disabled={isSavingWorkspace || !hasUnsavedChanges}
-              className={`hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-                hasUnsavedChanges
-                  ? 'bg-slate-800 hover:bg-slate-700 text-white border-slate-700'
-                  : 'bg-slate-900 text-slate-500 border-slate-800 cursor-default'
-              }`}
-              title="Save current edits in browser workspace"
-            >
-              <Save className="w-3.5 h-3.5" />
-              <span>{isSavingWorkspace ? 'Saving...' : 'Save'}</span>
-            </button>
-          )}
-
-          {/* More Menu Dropdown */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowMoreMenu((prev) => !prev)}
-              className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition-colors"
-              title="More Document Actions"
-            >
-              <MoreVertical className="w-4 h-4" />
-            </button>
-            {showMoreMenu && (
-              <div
-                className="absolute right-0 mt-1.5 w-56 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5 z-50 text-xs"
-                onMouseLeave={() => setShowMoreMenu(false)}
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    fileInputRef.current?.click();
-                  }}
-                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
-                >
-                  <Upload className="w-3.5 h-3.5 text-slate-400" />
-                  Replace PDF Document
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    handleLoadSample();
-                  }}
-                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                  Load 4-Page Sample PDF
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    setActiveTool('watermark');
-                  }}
-                  className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
-                >
-                  <Layers className="w-3.5 h-3.5 text-sky-400" />
-                  Add Page Watermark
-                </button>
-                {pdfBytes && (
-                  <>
-                    <div className="my-1 border-t border-slate-800" />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        handleInsertBlankPageAfter(activePage);
-                      }}
-                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
-                    >
-                      <FilePlus2 className="w-3.5 h-3.5 text-emerald-400" />
-                      Insert Blank Page After P.{activePage}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        handleExtractSinglePage(activePage);
-                      }}
-                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
-                    >
-                      <Scissors className="w-3.5 h-3.5 text-purple-400" />
-                      Extract Page {activePage} as PDF
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        handleRotateCurrentPage(activePage);
-                      }}
-                      className="w-full px-3.5 py-2 text-left text-slate-200 hover:bg-slate-800 flex items-center gap-2.5"
-                    >
-                      <RotateCw className="w-3.5 h-3.5 text-slate-400" />
-                      Rotate Current Page (+90°)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMoreMenu(false);
-                        handleRequestDeletePage(activePage);
-                      }}
-                      className="w-full px-3.5 py-2 text-left text-red-400 hover:bg-slate-800 flex items-center gap-2.5"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      {visibleThumbnails.length <= 1 ? 'Close / Clear Document' : 'Delete Current Page'}
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Primary Export Button */}
-          <button
-            type="button"
-            onClick={handleExportPdf}
-            disabled={!pdfBytes || isExporting}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-xs font-bold text-white transition-colors shadow-sm"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>{isExporting ? 'Exporting...' : 'Export PDF'}</span>
-          </button>
         </div>
-      </header>
+      </div>
 
       {/* FIND & REPLACE BAR */}
       {showFindBar && pdfBytes && (
@@ -3109,6 +3247,7 @@ export function PdfEditorWorkspace({
               <div
                 ref={canvasRef}
                 data-testid="pdf-page-canvas"
+                onMouseDown={handleFreehandMouseDown}
                 onClick={handleCanvasClick}
                 style={{
                   width: `${displayWidthPx}px`,
@@ -3126,6 +3265,23 @@ export function PdfEditorWorkspace({
                         : 'cursor-default'
                 }`}
               >
+                {/* Live Freehand Drawing Overlay */}
+                {isDrawingFreehand && freehandPoints.length > 1 && (
+                  <svg
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                    className="absolute inset-0 w-full h-full pointer-events-none z-40"
+                  >
+                    <polyline
+                      fill="none"
+                      stroke={drawingColorHex}
+                      strokeWidth={(drawingStrokeWidth / Math.max(1, displayWidthPx)) * 100}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={freehandPoints.map((p) => `${p.xPct},${p.yPct}`).join(' ')}
+                    />
+                  </svg>
+                )}
                 {/* Rendered PDF Page Image */}
                 {pageRenderUrl ? (
                   <img
@@ -4208,6 +4364,51 @@ export function PdfEditorWorkspace({
                         );
                       })}
                     </div>
+                  </div>
+                )}
+
+                {activeTool === 'drawing' && (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-2.5">
+                    <span className="font-bold text-white block">Freehand Drawing Brush</span>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-400">Ink Color</span>
+                      <div className="flex items-center gap-1.5">
+                        {['#dc2626', '#0f172a', '#1d4ed8', '#15803d'].map((c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() => setDrawingColorHex(c)}
+                            style={{ backgroundColor: c }}
+                            className={`w-5 h-5 rounded-full border ${
+                              drawingColorHex === c ? 'border-white ring-2 ring-red-500' : 'border-slate-700'
+                            }`}
+                          />
+                        ))}
+                        <input
+                          type="color"
+                          value={drawingColorHex}
+                          onChange={(e) => setDrawingColorHex(e.target.value)}
+                          className="w-5 h-5 rounded cursor-pointer bg-transparent border-0"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-slate-400">
+                        <span>Stroke Thickness</span>
+                        <span>{drawingStrokeWidth}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={12}
+                        value={drawingStrokeWidth}
+                        onChange={(e) => setDrawingStrokeWidth(Number(e.target.value) || 3)}
+                        className="w-full accent-red-600"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Click and drag anywhere on the PDF page to draw freehand ink strokes.
+                    </p>
                   </div>
                 )}
 

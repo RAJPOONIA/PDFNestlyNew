@@ -1,7 +1,17 @@
+'use client';
+
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { PdfNestlyLogo } from './Logo';
 
 export function Footer() {
+  const pathname = usePathname();
+
+  // Hide website footer completely inside standalone PDFNestly Studio routes
+  if (pathname === '/edit-pdf' || pathname === '/sign-pdf') {
+    return null;
+  }
+
   return (
     <footer className="bg-[#09090B] text-[#D4D4D8] border-t border-[#3F3F46] mt-auto">
       <div className="max-w-7xl mx-auto px-6 py-12">

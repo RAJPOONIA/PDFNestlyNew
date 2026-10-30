@@ -24,6 +24,11 @@ export function Navbar() {
   const { user, isLoading, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
+  // Hide website navigation completely inside standalone PDFNestly Studio routes
+  if (pathname === '/edit-pdf' || pathname === '/sign-pdf') {
+    return null;
+  }
+
   const navLinks = [
     { href: '/tools', label: 'All PDF Tools', match: '/tools' },
     { href: '/edit-pdf', label: 'Edit PDF', match: '/edit-pdf' },
