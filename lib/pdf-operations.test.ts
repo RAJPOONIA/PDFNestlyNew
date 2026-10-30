@@ -27,6 +27,7 @@ import {
   inspectPdfBytes,
   extractPdfTextAndLines,
   detectCandidateFormFields,
+  stripEditedTextFromPdfBytes,
 } from './pdf-engine-client';
 
 /**
@@ -935,5 +936,104 @@ test('9. Sejda UX & Interactive AcroForm Creation: Candidate Field Detection, Te
   assert.ok(fieldNames.includes('billing_cycle'), 'Exported PDF must contain billing_cycle AcroForm radio group');
   assert.equal(outForm.getTextField('applicant_name').getText(), 'Jane Doe');
   assert.equal(outForm.getCheckBox('accept_terms').isChecked(), true);
+});
+
+test('10. Non-Destructive PDF Text Editing on Colored Table Cells ("37" -> "40" on Page 2 TOTAL Row) & Surgical TJ Array Cell Stripping', async () => {
+  // 1. Load the 4-page sample contract where Page 2 has the light-blue TOTAL row:
+  //    ['TOTAL', 'Annual Contract Commitment (USD)', '37', '-', '$7,910.00']
+  const sampleBytes = await generateSamplePdfBytes('primary');
+  const extracted = await extractPdfTextAndLines(sampleBytes);
+
+  const page2Lines = extracted.lines.filter((l) => l.pageNumber === 2);
+  const qty37Line = page2Lines.find((l) => l.text.trim() === '37');
+  assert.ok(qty37Line, 'Should detect the "37" cell in the Page 2 TOTAL row');
+  assert.equal(qty37Line.isBold, true, 'Stream style parser should detect bold weight on TOTAL row "37"');
+  assert.equal(
+    qty37Line.colorHex?.toLowerCase(),
+    '#1a2638',
+    'Stream style parser should detect exact dark navy RGB color (#1a2638) of TOTAL row text'
+  );
+
+  // Also verify dark header white text color extraction ("Item Code" on dark navy header)
+  const itemCodeHeaderLine = page2Lines.find((l) => l.text.trim() === 'Item Code');
+  assert.ok(itemCodeHeaderLine, 'Should detect "Item Code" header cell on Page 2');
+  assert.equal(
+    itemCodeHeaderLine.colorHex?.toLowerCase(),
+    '#ffffff',
+    'Stream style parser should detect white text (#ffffff) on dark table header'
+  );
+
+  // 2. Build the exact in-place edit annotation created by PdfEditorWorkspace (with fillHex: undefined)
+  const edit37Annotation = {
+    id: 'edit_total_qty_37',
+    pageNumber: 2,
+    type: 'text' as const,
+    isExistingTextEdit: true,
+    originalText: '37',
+    text: '40',
+    xPercent: qty37Line.xPercent!,
+    yPercent: qty37Line.yPercent!,
+    widthPercent: Math.max(3.2, qty37Line.widthPercent! + 1.2),
+    heightPercent: Math.max(2.0, qty37Line.heightPercent! + 0.3),
+    originXPt: qty37Line.x,
+    originYPt: qty37Line.y,
+    originWidthPt: qty37Line.width,
+    originHeightPt: qty37Line.height,
+    originXPercent: qty37Line.xPercent,
+    originYPercent: qty37Line.yPercent,
+    originWidthPercent: qty37Line.widthPercent,
+    originHeightPercent: qty37Line.heightPercent,
+    fontSize: qty37Line.fontSize,
+    fontFamily: qty37Line.fontFamily,
+    isBold: qty37Line.isBold,
+    colorHex: qty37Line.colorHex,
+    fillHex: undefined,
+  };
+
+  // 3. Verify live canvas stripping via stripEditedTextFromPdfBytes removes "37" cleanly
+  const liveStripped = await stripEditedTextFromPdfBytes(sampleBytes, [edit37Annotation], 2);
+  assert.ok(
+    liveStripped.removedIds.includes('edit_total_qty_37'),
+    'stripEditedTextFromPdfBytes must report edit_total_qty_37 as removed from content stream'
+  );
+  const liveExtracted = await extractPdfTextAndLines(liveStripped.bytes);
+  const livePage2Lines = liveExtracted.lines.filter((l) => l.pageNumber === 2);
+  assert.equal(
+    livePage2Lines.some((l) => l.text.trim() === '37'),
+    false,
+    'Live stripped PDF stream must not contain original "37" cell text'
+  );
+  assert.ok(
+    livePage2Lines.some((l) => l.text.includes('Annual Contract Commitment (USD)')),
+    'Neighboring cell "Annual Contract Commitment (USD)" must remain intact on live canvas'
+  );
+  assert.ok(
+    livePage2Lines.some((l) => l.text.includes('$7,910.00')),
+    'Neighboring cell "$7,910.00" must remain intact on live canvas'
+  );
+
+  // 4. Verify full PDF export via applyEditorAnnotationsToPdf replaces "37" with "40"
+  //    AND does NOT draw any #ffffff white cover rectangle over the light-blue TOTAL row
+  const exportedBytes = await applyEditorAnnotationsToPdf(sampleBytes, [edit37Annotation]);
+  const exportedExtracted = await extractPdfTextAndLines(exportedBytes);
+  const exportedPage2Lines = exportedExtracted.lines.filter((l) => l.pageNumber === 2);
+
+  assert.equal(
+    exportedPage2Lines.some((l) => l.text.trim() === '37'),
+    false,
+    'Exported Page 2 must not contain original "37"'
+  );
+  assert.ok(
+    exportedPage2Lines.some((l) => l.text.trim() === '40'),
+    'Exported Page 2 must contain replacement "40"'
+  );
+  assert.ok(
+    exportedPage2Lines.some((l) => l.text.includes('TOTAL')),
+    'Exported Page 2 must preserve "TOTAL" cell'
+  );
+  assert.ok(
+    exportedPage2Lines.some((l) => l.text.includes('$7,910.00')),
+    'Exported Page 2 must preserve "$7,910.00" cell'
+  );
 });
 

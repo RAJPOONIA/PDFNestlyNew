@@ -72,6 +72,7 @@ import {
   renderPdfThumbnails,
   renderSinglePageDataUrl,
   applyEditorAnnotationsToPdf,
+  stripEditedTextFromPdfBytes,
   extractPdfTextAndLines,
   insertBlankPageIntoPdf,
   extractPagesFromPdf,
@@ -271,6 +272,9 @@ export function PdfEditorWorkspace({
   const [pendingImageUrl, setPendingImageUrl] = useState<string>('');
   const [pendingImageSize, setPendingImageSize] = useState<{ width: number; height: number }>({ width: 200, height: 100 });
   const [replacingImageTargetId, setReplacingImageTargetId] = useState<string | null>(null);
+  const [replacingSignatureTargetId, setReplacingSignatureTargetId] = useState<string | null>(null);
+  const [strippedCanvasIds, setStrippedCanvasIds] = useState<Set<string>>(new Set());
+  const [sampledBgColors, setSampledBgColors] = useState<Record<string, string>>({});
   const [stampPreset, setStampPreset] = useState<string>('APPROVED');
 
   // Tool behavior & Forms state
@@ -601,7 +605,97 @@ export function PdfEditorWorkspace({
     [pageDimensions.width, pageDimensions.height]
   );
 
-  // 6. Render active page preview whenever page, zoom, or extra rotations change
+  // Memoized key for existing text edits on the active page so we only re-strip and re-render
+  // the underlying PDF page canvas when an existing text line is activated/removed, not on every keystroke.
+  const activePageExistingEdits = React.useMemo(
+    () =>
+      annotations.filter(
+        (a) => a.pageNumber === activePage && a.isExistingTextEdit && Boolean(a.originalText)
+      ),
+    [annotations, activePage]
+  );
+
+  const activePageExistingEditKey = React.useMemo(
+    () =>
+      activePageExistingEdits
+        .map((a) => `${a.id}:${a.originalText}:${a.originXPt ?? ''}:${a.originYPt ?? ''}`)
+        .join('|'),
+    [activePageExistingEdits]
+  );
+
+  // Sample the local background pixel color around a text bounding box on the rendered page image
+  // Used only as a non-white fallback when a PDF uses rasterized images where content-stream text stripping cannot apply.
+  const sampleLocalBackgroundFromRender = useCallback(
+    (
+      renderUrl: string,
+      xPercent: number,
+      yPercent: number,
+      widthPercent: number,
+      heightPercent: number
+    ): Promise<string | null> => {
+      return new Promise((resolve) => {
+        if (!renderUrl) {
+          resolve(null);
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || img.width;
+            canvas.height = img.naturalHeight || img.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx || canvas.width <= 0 || canvas.height <= 0) {
+              resolve(null);
+              return;
+            }
+            ctx.drawImage(img, 0, 0);
+            const xPx = Math.max(1, Math.min(canvas.width - 2, Math.round((xPercent / 100) * canvas.width)));
+            const yPx = Math.max(1, Math.min(canvas.height - 2, Math.round((yPercent / 100) * canvas.height)));
+            const wPx = Math.max(4, Math.round((widthPercent / 100) * canvas.width));
+            const hPx = Math.max(4, Math.round((heightPercent / 100) * canvas.height));
+
+            // Sample perimeter points just outside the text glyphs (top, bottom, left)
+            const sampleCoords: Array<[number, number]> = [
+              [Math.max(0, xPx - 3), Math.max(0, yPx + Math.floor(hPx / 2))],
+              [Math.min(canvas.width - 1, xPx + Math.floor(wPx / 2)), Math.max(0, yPx - 2)],
+              [Math.min(canvas.width - 1, xPx + Math.floor(wPx / 2)), Math.min(canvas.height - 1, yPx + hPx + 2)],
+            ];
+
+            let rSum = 0;
+            let gSum = 0;
+            let bSum = 0;
+            let count = 0;
+            for (const [sx, sy] of sampleCoords) {
+              const pixel = ctx.getImageData(sx, sy, 1, 1).data;
+              if (pixel[3] > 200) {
+                rSum += pixel[0];
+                gSum += pixel[1];
+                bSum += pixel[2];
+                count++;
+              }
+            }
+            if (count === 0) {
+              resolve(null);
+              return;
+            }
+            const r = Math.round(rSum / count);
+            const g = Math.round(gSum / count);
+            const b = Math.round(bSum / count);
+            const hex = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+            resolve(hex);
+          } catch {
+            resolve(null);
+          }
+        };
+        img.onerror = () => resolve(null);
+        img.src = renderUrl;
+      });
+    },
+    []
+  );
+
+  // 6. Render active page preview whenever page, zoom, extra rotations, or stripped text lines change
   const renderCurrentPage = useCallback(() => {
     if (!pdfBytes) return () => {};
     let active = true;
@@ -611,25 +705,41 @@ export function PdfEditorWorkspace({
     const baseScale = Math.max(0.6, Math.min(2.5, (zoomPercent / 100) * 1.5));
     const extraRot = extraRotations[activePage] || 0;
 
-    renderSinglePageDataUrl(pdfBytes, activePage, baseScale, extraRot)
-      .then((res) => {
+    (async () => {
+      try {
+        let bytesToRender = pdfBytes;
+        let newlyStrippedIds = new Set<string>();
+
+        if (activePageExistingEdits.length > 0) {
+          const stripRes = await stripEditedTextFromPdfBytes(
+            pdfBytes,
+            activePageExistingEdits,
+            activePage
+          );
+          bytesToRender = stripRes.bytes;
+          newlyStrippedIds = new Set(stripRes.removedIds);
+        }
+
+        const res = await renderSinglePageDataUrl(bytesToRender, activePage, baseScale, extraRot);
         if (!active) return;
+        setStrippedCanvasIds(newlyStrippedIds);
         setPageRenderUrl(res.dataUrl);
         if (res.unscaledWidthPt && res.unscaledHeightPt) {
           setPageDimensions({ width: res.unscaledWidthPt, height: res.unscaledHeightPt });
         }
         setIsRenderingPage(false);
-      })
-      .catch((err) => {
+      } catch (err) {
         if (!active) return;
         setRenderError('Failed to render page: ' + (err as Error).message);
         setIsRenderingPage(false);
-      });
+      }
+    })();
 
     return () => {
       active = false;
     };
-  }, [pdfBytes, activePage, zoomPercent, extraRotations]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfBytes, activePage, zoomPercent, extraRotations, activePageExistingEditKey]);
 
   useEffect(() => {
     const cancel = renderCurrentPage();
@@ -874,6 +984,22 @@ export function PdfEditorWorkspace({
       }
 
       const newId = `edit_txt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      // Sample local perimeter background color asynchronously in case stream stripping is still rendering
+      if (pageRenderUrl) {
+        sampleLocalBackgroundFromRender(
+          pageRenderUrl,
+          line.xPercent,
+          line.yPercent,
+          line.widthPercent,
+          line.heightPercent
+        ).then((sampledHex) => {
+          if (sampledHex) {
+            setSampledBgColors((prev) => ({ ...prev, [newId]: sampledHex }));
+          }
+        });
+      }
+
+      const exactFontSize = Math.max(6, Math.round((line.fontSize || 12) * 10) / 10);
       const newEditItem: EditorAnnotationItem = {
         id: newId,
         pageNumber: line.pageNumber,
@@ -883,8 +1009,8 @@ export function PdfEditorWorkspace({
         text: line.text,
         xPercent: line.xPercent,
         yPercent: line.yPercent,
-        widthPercent: Math.max(8, roundPct(line.widthPercent + 2)),
-        heightPercent: Math.max(2.2, roundPct(line.heightPercent + 0.4)),
+        widthPercent: Math.max(3.2, roundPct(line.widthPercent + 1.2)),
+        heightPercent: Math.max(2.0, roundPct(line.heightPercent + 0.3)),
         originXPt: line.x,
         originYPt: line.y,
         originWidthPt: line.width,
@@ -893,7 +1019,7 @@ export function PdfEditorWorkspace({
         originYPercent: line.yPercent,
         originWidthPercent: line.widthPercent,
         originHeightPercent: line.heightPercent,
-        fontSize: Math.max(8, Math.round(line.fontSize || 12)),
+        fontSize: exactFontSize,
         fontFamily: line.fontFamily || 'Helvetica',
         isBold: line.isBold || false,
         isItalic: line.isItalic || false,
@@ -901,9 +1027,10 @@ export function PdfEditorWorkspace({
         isStrikethrough: false,
         textAlign: 'left',
         letterSpacingPt: 0,
-        lineHeightMultiplier: 1.2,
+        lineHeightMultiplier: 1.15,
         colorHex: line.colorHex || '#0f172a',
-        fillHex: '#ffffff',
+        // Never set fillHex: '#ffffff' by default! Original PDF background is preserved via stream stripping.
+        fillHex: undefined,
         opacity: 1,
       };
 
@@ -911,9 +1038,9 @@ export function PdfEditorWorkspace({
       setSelectedId(newId);
       setEditInitialText(line.text);
       setEditingId(newId);
-      setStatusMessage('Editing PDF text in-place. Type directly on canvas, drag to move, or press Esc to cancel.');
+      setStatusMessage('Editing PDF text in-place (preserving original background). Type directly on canvas, drag to move, or press Esc to cancel.');
     },
-    [annotations, pushAnnotationsState]
+    [annotations, pageRenderUrl, pushAnnotationsState, sampleLocalBackgroundFromRender]
   );
 
   // Detect candidate form fields on the PDF and present for user confirmation
@@ -1227,17 +1354,23 @@ export function PdfEditorWorkspace({
       };
     } else if (activeTool === 'signature') {
       if (!pendingImageUrl) {
+        setSigningFormFieldId(null);
+        setReplacingSignatureTargetId(null);
         setShowSignaturePad(true);
         return;
       }
+      const sigAspect = pendingImageSize.width / Math.max(1, pendingImageSize.height);
+      const widthPct = 22;
+      const pageAspect = pageDimensions.width / Math.max(1, pageDimensions.height);
+      const heightPct = Math.min(35, Math.max(4.5, (widthPct / sigAspect) * pageAspect));
       newItem = {
         id: newId,
         pageNumber: activePage,
         type: 'signature',
-        xPercent,
-        yPercent,
-        widthPercent: 24,
-        heightPercent: 9,
+        xPercent: Math.max(0, Math.min(100 - widthPct, xPercent)),
+        yPercent: Math.max(0, Math.min(100 - heightPct, yPercent)),
+        widthPercent: roundPct(widthPct),
+        heightPercent: roundPct(heightPct),
         imageDataUrl: pendingImageUrl,
         aspectRatioLocked: true,
         opacity: 1,
@@ -1583,33 +1716,41 @@ export function PdfEditorWorkspace({
 
         const item = currentList[idx];
         const aspect = (item.widthPercent || 20) / Math.max(1, item.heightPercent || 10);
+        const lockRatio = Boolean(
+          item.aspectRatioLocked && (item.type === 'image' || item.type === 'signature')
+        );
 
         let newX = item.xPercent;
         let newY = item.yPercent;
         let newW = item.widthPercent || 20;
         let newH = item.heightPercent || 10;
+        const rightEdge = item.xPercent + (item.widthPercent || 20);
+        const bottomEdge = item.yPercent + (item.heightPercent || 10);
 
         if (resizeHandle.includes('e')) {
           newW = Math.max(3, Math.min(100 - item.xPercent, mouseXPct - item.xPercent));
-          if (item.aspectRatioLocked && (item.type === 'image' || item.type === 'signature')) {
-            newH = Math.max(2, newW / aspect);
-          }
-        }
-        if (resizeHandle.includes('s')) {
-          newH = Math.max(1.8, Math.min(100 - item.yPercent, mouseYPct - item.yPercent));
-          if (item.aspectRatioLocked && (item.type === 'image' || item.type === 'signature')) {
-            newW = Math.max(3, newH * aspect);
-          }
         }
         if (resizeHandle.includes('w')) {
-          const rightEdge = item.xPercent + (item.widthPercent || 20);
           newX = Math.max(0, Math.min(rightEdge - 3, mouseXPct));
           newW = rightEdge - newX;
         }
+        if (resizeHandle.includes('s')) {
+          newH = Math.max(1.8, Math.min(100 - item.yPercent, mouseYPct - item.yPercent));
+        }
         if (resizeHandle.includes('n')) {
-          const bottomEdge = item.yPercent + (item.heightPercent || 10);
           newY = Math.max(0, Math.min(bottomEdge - 1.8, mouseYPct));
           newH = bottomEdge - newY;
+        }
+
+        if (lockRatio) {
+          if (resizeHandle.includes('e') || resizeHandle.includes('w')) {
+            newH = Math.max(1.8, Math.min(100 - (resizeHandle.includes('n') ? 0 : newY), newW / aspect));
+            if (resizeHandle.includes('n')) {
+              newY = Math.max(0, bottomEdge - newH);
+            }
+          } else if (resizeHandle === 's' || resizeHandle === 'n') {
+            newW = Math.max(3, Math.min(100 - newX, newH * aspect));
+          }
         }
 
         currentList[idx] = {
@@ -1846,8 +1987,8 @@ export function PdfEditorWorkspace({
         text: updatedText,
         xPercent: match.xPercent,
         yPercent: match.yPercent,
-        widthPercent: Math.max(8, roundPct(match.widthPercent + 2)),
-        heightPercent: Math.max(2.2, roundPct(match.heightPercent + 0.4)),
+        widthPercent: Math.max(3.2, roundPct(match.widthPercent + 1.5)),
+        heightPercent: Math.max(2.0, roundPct(match.heightPercent + 0.3)),
         originXPt: match.x,
         originYPt: match.y,
         originWidthPt: match.width,
@@ -1856,12 +1997,12 @@ export function PdfEditorWorkspace({
         originYPercent: match.yPercent,
         originWidthPercent: match.widthPercent,
         originHeightPercent: match.heightPercent,
-        fontSize: Math.max(8, Math.round(match.fontSize || 12)),
+        fontSize: Math.max(6, Math.round((match.fontSize || 12) * 10) / 10),
         fontFamily: match.fontFamily || 'Helvetica',
         isBold: match.isBold || false,
         isItalic: match.isItalic || false,
         colorHex: match.colorHex || '#0f172a',
-        fillHex: '#ffffff',
+        fillHex: undefined,
         opacity: 1,
       };
       pushAnnotationsState([...annotations, newItem]);
@@ -1899,8 +2040,8 @@ export function PdfEditorWorkspace({
           text: match.text.replace(regex, replaceQuery),
           xPercent: match.xPercent,
           yPercent: match.yPercent,
-          widthPercent: Math.max(8, roundPct(match.widthPercent + 2)),
-          heightPercent: Math.max(2.2, roundPct(match.heightPercent + 0.4)),
+          widthPercent: Math.max(3.2, roundPct(match.widthPercent + 1.5)),
+          heightPercent: Math.max(2.0, roundPct(match.heightPercent + 0.3)),
           originXPt: match.x,
           originYPt: match.y,
           originWidthPt: match.width,
@@ -1909,12 +2050,12 @@ export function PdfEditorWorkspace({
           originYPercent: match.yPercent,
           originWidthPercent: match.widthPercent,
           originHeightPercent: match.heightPercent,
-          fontSize: Math.max(8, Math.round(match.fontSize || 12)),
+          fontSize: Math.max(6, Math.round((match.fontSize || 12) * 10) / 10),
           fontFamily: match.fontFamily || 'Helvetica',
           isBold: match.isBold || false,
           isItalic: match.isItalic || false,
           colorHex: match.colorHex || '#0f172a',
-          fillHex: '#ffffff',
+          fillHex: undefined,
           opacity: 1,
         });
       }
@@ -2174,8 +2315,9 @@ export function PdfEditorWorkspace({
                   setEditingId(null);
                   setShowFormsMenu(false);
                   setActiveTool(tool.id as EditorToolMode);
-                  if (tool.id === 'signature' && !pendingImageUrl) {
+                  if (tool.id === 'signature') {
                     setSigningFormFieldId(null);
+                    setReplacingSignatureTargetId(null);
                     setShowSignaturePad(true);
                   } else if (tool.id === 'image' && !pendingImageUrl) {
                     setReplacingImageTargetId(null);
@@ -2849,6 +2991,15 @@ export function PdfEditorWorkspace({
           ref={mainContainerRef}
           onMouseDown={handleMainContainerMouseDown}
           onMouseMove={handleCanvasMouseMove}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setSelectedId(null);
+              setEditingId(null);
+              setSelectedTextLine(null);
+              setShowFormsMenu(false);
+              setShowMoreMenu(false);
+            }
+          }}
           className={`flex-1 bg-slate-900/95 overflow-auto flex items-center justify-center p-4 sm:p-6 relative ${
             activeTool === 'pan' ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : ''
           }`}
@@ -3124,11 +3275,12 @@ export function PdfEditorWorkspace({
                     );
                   })}
 
-                {/* ORIGIN WHITE MASK FOR MOVED EXISTING TEXT EDITS */}
+                {/* ORIGIN MASK FOR MOVED EXISTING TEXT EDITS (only used if PDF stream stripping did not apply, e.g. scanned raster PDFs) */}
                 {pageAnnotations
                   .filter(
                     (item) =>
                       item.isExistingTextEdit &&
+                      !strippedCanvasIds.has(item.id) &&
                       item.originXPercent !== undefined &&
                       item.originYPercent !== undefined &&
                       (Math.abs(item.xPercent - item.originXPercent) > 0.25 ||
@@ -3138,11 +3290,11 @@ export function PdfEditorWorkspace({
                     <div
                       key={`origin_mask_${item.id}`}
                       style={{
-                        left: `${Math.max(0, (item.originXPercent ?? item.xPercent) - 0.15)}%`,
-                        top: `${Math.max(0, (item.originYPercent ?? item.yPercent) - 0.15)}%`,
-                        width: `${Math.min(100, (item.originWidthPercent ?? item.widthPercent) + 0.4)}%`,
-                        height: `${Math.min(100, (item.originHeightPercent ?? item.heightPercent) + 0.3)}%`,
-                        backgroundColor: item.fillHex || '#ffffff',
+                        left: `${Math.max(0, item.originXPercent ?? item.xPercent)}%`,
+                        top: `${Math.max(0, item.originYPercent ?? item.yPercent)}%`,
+                        width: `${Math.min(100, item.originWidthPercent ?? item.widthPercent)}%`,
+                        height: `${Math.min(100, item.originHeightPercent ?? item.heightPercent)}%`,
+                        backgroundColor: item.fillHex || sampledBgColors[item.id] || 'transparent',
                       }}
                       className="absolute pointer-events-none z-10"
                     />
@@ -3394,15 +3546,139 @@ export function PdfEditorWorkspace({
                         </div>
                       )}
 
+                      {/* CONTEXTUAL FLOATING TOOLBAR FOR SIGNATURE & IMAGE OBJECTS */}
+                      {isSelected &&
+                        (item.type === 'signature' || item.type === 'image') &&
+                        !showFormsMenu &&
+                        !showMoreMenu && (
+                          <div
+                            data-testid="floating-signature-toolbar"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`absolute left-0 ${
+                              toolbarBelow ? 'top-full mt-2' : 'bottom-full mb-2'
+                            } z-50 flex items-center gap-1 bg-slate-950/95 border border-slate-700 rounded-xl px-2 py-1.5 shadow-2xl text-white whitespace-nowrap`}
+                          >
+                            <div
+                              onMouseDown={(e) => handleStartDrag(e, item)}
+                              title="Drag to move"
+                              className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white cursor-move flex items-center"
+                            >
+                              <Move className="w-3.5 h-3.5" />
+                            </div>
+                            <div className="h-4 w-px bg-slate-800 mx-0.5" />
+                            {item.type === 'signature' ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSigningFormFieldId(null);
+                                  setReplacingSignatureTargetId(item.id);
+                                  setShowSignaturePad(true);
+                                }}
+                                className="px-2 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-[11px] font-bold flex items-center gap-1"
+                                title="Open Signature Studio to type, draw, upload, or pick another signature"
+                              >
+                                <PenTool className="w-3 h-3" />
+                                Change Signature
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReplacingImageTargetId(item.id);
+                                  imageInputRef.current?.click();
+                                }}
+                                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-[11px] font-bold flex items-center gap-1"
+                              >
+                                <Upload className="w-3 h-3" />
+                                Replace Image
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSelectedProperty({
+                                  aspectRatioLocked: !item.aspectRatioLocked,
+                                })
+                              }
+                              className={`px-1.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 ${
+                                item.aspectRatioLocked
+                                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-600/40'
+                                  : 'bg-slate-900 text-slate-400 hover:text-white'
+                              }`}
+                              title="Toggle Aspect Ratio Lock when resizing corners"
+                            >
+                              {item.aspectRatioLocked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                              <span>Ratio</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSelectedProperty({
+                                  rotationDeg: (((item.rotationDeg || 0) - 15 + 360) % 360),
+                                })
+                              }
+                              className="px-1.5 py-1 rounded hover:bg-slate-800 text-[11px] font-semibold text-slate-300 hover:text-white"
+                              title="Rotate Counter-Clockwise (-15°)"
+                            >
+                              -15°
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSelectedProperty({
+                                  rotationDeg: (((item.rotationDeg || 0) + 15) % 360),
+                                })
+                              }
+                              className="px-1.5 py-1 rounded hover:bg-slate-800 text-[11px] font-semibold text-slate-300 hover:text-white"
+                              title="Rotate Clockwise (+15°)"
+                            >
+                              +15°
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateSelectedProperty({
+                                  rotationDeg: (((item.rotationDeg || 0) + 90) % 360),
+                                })
+                              }
+                              className="p-1 rounded hover:bg-slate-800 text-slate-300 hover:text-white"
+                              title="Rotate +90°"
+                            >
+                              <RotateCw className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDuplicateSelected}
+                              className="p-1 rounded hover:bg-slate-800 text-slate-300 hover:text-white"
+                              title="Duplicate"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={handleDeleteSelected}
+                              className="p-1 rounded text-red-400 hover:bg-red-950/60 hover:text-red-300"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        )}
+
                       {/* ITEM RENDERING BY TYPE */}
                       {isTextObject && (
                         <div
                           style={{
                             backgroundColor: item.isExistingTextEdit
-                              ? item.fillHex || '#ffffff'
+                              ? item.backgroundColorHex ||
+                                item.fillHex ||
+                                (strippedCanvasIds.has(item.id)
+                                  ? 'transparent'
+                                  : sampledBgColors[item.id] || 'transparent')
                               : item.type === 'comment'
                                 ? item.fillHex || '#fef08a'
-                                : item.fillHex || 'transparent',
+                                : item.backgroundColorHex || item.fillHex || 'transparent',
                           }}
                           className={`w-full h-full flex items-start overflow-visible ${
                             item.type === 'comment' ? 'p-1.5 rounded border border-amber-400/80 shadow-sm' : ''
@@ -3413,7 +3689,21 @@ export function PdfEditorWorkspace({
                               ref={activeEditorInputRef}
                               data-testid="in-place-text-input"
                               value={item.text ?? ''}
-                              onChange={(e) => updateSelectedProperty({ text: e.target.value })}
+                              onChange={(e) => {
+                                const nextText = e.target.value;
+                                const updates: Partial<EditorAnnotationItem> = { text: nextText };
+                                // Auto-expand box width slightly if typed replacement text is longer than original
+                                if (item.isExistingTextEdit) {
+                                  const charCount = Math.max(1, nextText.length);
+                                  const approxCharWidthPct =
+                                    (((item.fontSize || 11) * 0.56) / Math.max(1, pageDimensions.width || 612)) * 100;
+                                  const neededWidthPct = roundPct(charCount * approxCharWidthPct + 1.4);
+                                  if (neededWidthPct > item.widthPercent) {
+                                    updates.widthPercent = Math.min(95 - item.xPercent, neededWidthPct);
+                                  }
+                                }
+                                updateSelectedProperty(updates);
+                              }}
                               onKeyDown={(e) => {
                                 e.stopPropagation();
                                 if (e.key === 'Escape') {
@@ -3822,10 +4112,15 @@ export function PdfEditorWorkspace({
                         </div>
                       )}
 
-                      {/* RESIZE HANDLES WHEN SELECTED */}
-                      {isSelected && (
+                      {/* RESIZE HANDLES WHEN SELECTED (compact text boxes use only right-edge handle so text is never obscured) */}
+                      {isSelected && !isEditingThis && (
                         <>
-                          {(['nw', 'ne', 'sw', 'se', 'e', 's'] as const).map((handle) => {
+                          {(isTextObject && item.widthPercent < 10
+                            ? (['e'] as const)
+                            : isTextObject
+                              ? (['e', 'se'] as const)
+                              : (['nw', 'ne', 'sw', 'se', 'e', 's'] as const)
+                          ).map((handle) => {
                             const posClass =
                               handle === 'nw'
                                 ? '-top-1.5 -left-1.5 cursor-nwse-resize'
@@ -3842,7 +4137,7 @@ export function PdfEditorWorkspace({
                               <div
                                 key={handle}
                                 onMouseDown={(e) => handleStartResize(e, item, handle)}
-                                className={`absolute w-3 h-3 bg-white border-2 border-red-600 rounded-full shadow ${posClass}`}
+                                className={`absolute w-2.5 h-2.5 bg-white border-2 border-red-600 rounded-full shadow ${posClass}`}
                               />
                             );
                           })}
@@ -4295,6 +4590,43 @@ export function PdfEditorWorkspace({
                             />
                           </div>
                         </div>
+                        {/* Optional Background Fill Control for Text / Existing Text */}
+                        <div className="pt-1 border-t border-slate-800 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-slate-400 font-medium">Background Fill</span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateSelectedProperty({
+                                    fillHex: undefined,
+                                    backgroundColorHex: undefined,
+                                  })
+                                }
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                  !selectedAnnotation.fillHex && !selectedAnnotation.backgroundColorHex
+                                    ? 'bg-emerald-950/60 border-emerald-600/50 text-emerald-300'
+                                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                                }`}
+                                title="Preserve original PDF background without drawing a color box"
+                              >
+                                Preserve Original (Transparent)
+                              </button>
+                              <input
+                                type="color"
+                                title="Set explicit custom background fill color"
+                                value={selectedAnnotation.fillHex || selectedAnnotation.backgroundColorHex || '#ffffff'}
+                                onChange={(e) =>
+                                  updateSelectedProperty({
+                                    fillHex: e.target.value,
+                                    backgroundColorHex: e.target.value,
+                                  })
+                                }
+                                className="w-5 h-5 rounded cursor-pointer bg-transparent border-0"
+                              />
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     )}
 
@@ -4328,10 +4660,35 @@ export function PdfEditorWorkspace({
                           </button>
                         </div>
 
-                        <div className="space-y-1">
-                          <label className="text-slate-400 font-medium block">
-                            Image Rotation ({selectedAnnotation.rotationDeg || 0}°)
-                          </label>
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <label className="text-slate-400 font-medium">
+                              Rotation ({selectedAnnotation.rotationDeg || 0}°)
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => updateSelectedProperty({ rotationDeg: 0 })}
+                              className="text-[10px] text-slate-400 hover:text-white"
+                            >
+                              Reset 0°
+                            </button>
+                          </div>
+                          <input
+                            type="range"
+                            min={-180}
+                            max={180}
+                            step={1}
+                            value={
+                              (selectedAnnotation.rotationDeg || 0) > 180
+                                ? (selectedAnnotation.rotationDeg || 0) - 360
+                                : selectedAnnotation.rotationDeg || 0
+                            }
+                            onChange={(e) => {
+                              const val = Number(e.target.value) || 0;
+                              updateSelectedProperty({ rotationDeg: (val + 360) % 360 });
+                            }}
+                            className="w-full accent-red-600"
+                          />
                           <div className="grid grid-cols-4 gap-1">
                             {[0, 90, 180, 270].map((deg) => (
                               <button
@@ -4349,6 +4706,26 @@ export function PdfEditorWorkspace({
                             ))}
                           </div>
                         </div>
+
+                        {selectedAnnotation.type === 'signature' && (
+                          <div className="space-y-2 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSigningFormFieldId(null);
+                                setReplacingSignatureTargetId(selectedAnnotation.id);
+                                setShowSignaturePad(true);
+                              }}
+                              className="w-full py-2 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold border border-red-500 flex items-center justify-center gap-1.5 shadow-sm"
+                            >
+                              <PenTool className="w-3.5 h-3.5" />
+                              Change / Edit Signature
+                            </button>
+                            <p className="text-[10px] text-slate-400 leading-relaxed bg-slate-950 border border-slate-800/80 rounded-lg p-2">
+                              Embedded as a high-resolution transparent PNG electronic signature appearance. (Not a hardware PKI/PAdES cryptographic certificate.)
+                            </p>
+                          </div>
+                        )}
 
                         {selectedAnnotation.type === 'image' && (
                           <button
@@ -4730,25 +5107,42 @@ export function PdfEditorWorkspace({
 
       {/* SIGNATURE BUILDER MODAL */}
       {showSignaturePad && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white text-slate-900 rounded-2xl max-w-lg w-full p-5 shadow-2xl space-y-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          data-testid="signature-modal"
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto"
+        >
+          <div className="bg-white text-slate-900 rounded-2xl max-w-2xl w-full p-5 shadow-2xl space-y-4 my-auto">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-              <h3 className="font-bold text-base text-slate-900">
-                {signingFormFieldId ? 'Sign Form Field' : 'Create Your Signature'}
-              </h3>
+              <div>
+                <h3 className="font-bold text-base text-slate-900">
+                  {signingFormFieldId
+                    ? 'Sign Form Field'
+                    : replacingSignatureTargetId
+                      ? 'Replace Signature'
+                      : 'Create Your Signature'}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Type with 10 cursive styles, draw with smooth ink, upload an image, or capture with camera.
+                </p>
+              </div>
               <button
                 type="button"
+                data-testid="close-signature-modal"
                 onClick={() => {
                   setSigningFormFieldId(null);
+                  setReplacingSignatureTargetId(null);
                   setShowSignaturePad(false);
                 }}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-700"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
             <SignatureBuilder
               onSignatureReady={(dataUrl) => {
+                // 1. Signing an interactive AcroForm signature field
                 if (signingFormFieldId) {
                   const next = annotations.map((a) =>
                     a.id === signingFormFieldId ? { ...a, imageDataUrl: dataUrl } : a
@@ -4756,13 +5150,80 @@ export function PdfEditorWorkspace({
                   pushAnnotationsState(next);
                   setSigningFormFieldId(null);
                   setShowSignaturePad(false);
-                  setStatusMessage('Signed signature form field.');
+                  setStatusMessage('Signed interactive signature field.');
                   return;
                 }
-                setPendingImageUrl(dataUrl);
-                setShowSignaturePad(false);
-                setActiveTool('signature');
-                setStatusMessage('Signature ready! Click anywhere on the PDF page to place your signature.');
+
+                // Measure natural dimensions of the transparent signature PNG
+                const finishPlacement = (natW: number, natH: number) => {
+                  setPendingImageUrl(dataUrl);
+                  setPendingImageSize({ width: natW, height: natH });
+                  const sigAspect = Math.max(0.5, natW / Math.max(1, natH));
+                  const pageAspect = (pageDimensions.width || 612) / Math.max(1, pageDimensions.height || 792);
+
+                  // 2. Replacing an existing signature annotation on the canvas
+                  if (replacingSignatureTargetId) {
+                    const target = annotations.find((a) => a.id === replacingSignatureTargetId);
+                    if (target) {
+                      const nextHeightPct = target.aspectRatioLocked
+                        ? roundPct(Math.min(45, Math.max(4, (target.widthPercent / sigAspect) * pageAspect)))
+                        : target.heightPercent;
+                      const next = annotations.map((a) =>
+                        a.id === replacingSignatureTargetId
+                          ? { ...a, imageDataUrl: dataUrl, heightPercent: nextHeightPct }
+                          : a
+                      );
+                      pushAnnotationsState(next);
+                      setSelectedId(replacingSignatureTargetId);
+                    }
+                    setReplacingSignatureTargetId(null);
+                    setShowSignaturePad(false);
+                    setActiveTool('select');
+                    setStatusMessage('Updated signature on page.');
+                    return;
+                  }
+
+                  // 3. Place new signature directly onto the active PDF page and select it immediately
+                  const widthPct = 22;
+                  const heightPct = roundPct(Math.min(35, Math.max(4.5, (widthPct / sigAspect) * pageAspect)));
+                  const existingSigsOnPage = annotations.filter(
+                    (a) => a.pageNumber === activePage && a.type === 'signature'
+                  ).length;
+                  const staggerOffset = (existingSigsOnPage % 4) * 3;
+                  const newSigId = `sig_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+                  const newSigItem: EditorAnnotationItem = {
+                    id: newSigId,
+                    pageNumber: activePage,
+                    type: 'signature',
+                    xPercent: roundPct(Math.min(72, 38 + staggerOffset)),
+                    yPercent: roundPct(Math.min(82, 62 + staggerOffset)),
+                    widthPercent: roundPct(widthPct),
+                    heightPercent: heightPct,
+                    imageDataUrl: dataUrl,
+                    aspectRatioLocked: true,
+                    opacity: 1,
+                    rotationDeg: 0,
+                  };
+                  pushAnnotationsState([...annotations, newSigItem]);
+                  setSelectedId(newSigId);
+                  setShowSignaturePad(false);
+                  setActiveTool('select');
+                  setIsInspectorOpen(true);
+                  setStatusMessage(
+                    'Signature placed on Page ' +
+                      activePage +
+                      '! Drag to position anywhere, or use corner handles to resize.'
+                  );
+                };
+
+                const probeImg = new Image();
+                probeImg.onload = () => {
+                  finishPlacement(probeImg.naturalWidth || 360, probeImg.naturalHeight || 110);
+                };
+                probeImg.onerror = () => {
+                  finishPlacement(360, 110);
+                };
+                probeImg.src = dataUrl;
               }}
             />
           </div>

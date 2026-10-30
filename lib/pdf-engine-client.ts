@@ -663,8 +663,292 @@ export async function renderSinglePageDataUrl(
   };
 }
 
+function multiplyAffineMatrices(m1: number[], m2: number[]): number[] {
+  return [
+    m1[0] * m2[0] + m1[1] * m2[2],
+    m1[0] * m2[1] + m1[1] * m2[3],
+    m1[2] * m2[0] + m1[3] * m2[2],
+    m1[2] * m2[1] + m1[3] * m2[3],
+    m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
+    m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
+  ];
+}
+
+function rgbFloatsToHex(r: number, g: number, b: number): string {
+  const clampByte = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+  const toHex = (n: number) => clampByte(n).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+interface StreamFontInfo {
+  fontFamily: 'Helvetica' | 'TimesRoman' | 'Courier';
+  isBold: boolean;
+  isItalic: boolean;
+}
+
+interface StreamTextStyleHint {
+  x: number;
+  y: number;
+  text: string;
+  fontFamily: 'Helvetica' | 'TimesRoman' | 'Courier';
+  isBold: boolean;
+  isItalic: boolean;
+  colorHex: string;
+}
+
+function collectPageRawStreams(pdfDoc: PDFDocument, page: PDFPage): PDFRawStream[] {
+  const rawStreams: PDFRawStream[] = [];
+  const contentsEntry = page.node.Contents();
+  if (contentsEntry instanceof PDFRef) {
+    const lookedUp = pdfDoc.context.lookup(contentsEntry);
+    if (lookedUp instanceof PDFRawStream) rawStreams.push(lookedUp);
+  } else if (contentsEntry instanceof PDFArray) {
+    for (let i = 0; i < contentsEntry.size(); i++) {
+      const item = contentsEntry.get(i);
+      const lookedUp = item instanceof PDFRef ? pdfDoc.context.lookup(item) : item;
+      if (lookedUp instanceof PDFRawStream) rawStreams.push(lookedUp);
+    }
+  } else if (contentsEntry instanceof PDFRawStream) {
+    rawStreams.push(contentsEntry);
+  }
+
+  // Also inspect Form XObjects (/Resources -> /XObject -> /Subtype /Form)
+  try {
+    const resources = page.node.Resources();
+    const xObjectDict = resources ? pdfDoc.context.lookupMaybe(resources.get(PDFName.of('XObject')), PDFDict) : undefined;
+    if (xObjectDict) {
+      for (const [, val] of xObjectDict.entries()) {
+        const looked = val instanceof PDFRef ? pdfDoc.context.lookup(val) : val;
+        if (looked instanceof PDFRawStream) {
+          const subtype = looked.dict.get(PDFName.of('Subtype'));
+          if (subtype === PDFName.of('Form')) {
+            rawStreams.push(looked);
+          }
+        }
+      }
+    }
+  } catch {
+    // Ignore malformed XObject resources
+  }
+
+  return rawStreams;
+}
+
+function extractPageFontResourceMap(pdfDoc: PDFDocument, page: PDFPage): Map<string, StreamFontInfo> {
+  const map = new Map<string, StreamFontInfo>();
+  try {
+    const resources = page.node.Resources();
+    if (!resources) return map;
+    const fontDict = pdfDoc.context.lookupMaybe(resources.get(PDFName.of('Font')), PDFDict);
+    if (!fontDict) return map;
+
+    for (const [keyName, val] of fontDict.entries()) {
+      const cleanKey = keyName.decodeText().replace(/^\//, '');
+      const fDict = val instanceof PDFRef ? pdfDoc.context.lookupMaybe(val, PDFDict) : val instanceof PDFDict ? val : undefined;
+      if (!fDict) continue;
+      const baseFontObj = fDict.get(PDFName.of('BaseFont'));
+      const baseFontRaw =
+        baseFontObj instanceof PDFName
+          ? baseFontObj.decodeText()
+          : baseFontObj instanceof PDFString || baseFontObj instanceof PDFHexString
+            ? baseFontObj.decodeText()
+            : String(baseFontObj || '');
+      const lower = baseFontRaw.toLowerCase();
+
+      let fontFamily: 'Helvetica' | 'TimesRoman' | 'Courier' = 'Helvetica';
+      if (lower.includes('courier') || lower.includes('mono') || lower.includes('consolas')) {
+        fontFamily = 'Courier';
+      } else if ((lower.includes('times') || lower.includes('serif') || lower.includes('georgia') || lower.includes('roman')) && !lower.includes('sans')) {
+        fontFamily = 'TimesRoman';
+      }
+      const isBold = lower.includes('bold') || lower.includes('black') || lower.includes('heavy') || lower.includes('demi');
+      const isItalic = lower.includes('italic') || lower.includes('oblique');
+      map.set(cleanKey, { fontFamily, isBold, isItalic });
+    }
+  } catch {
+    // Ignore malformed font dict
+  }
+  return map;
+}
+
+function extractPageStreamTextStyleHints(pdfDoc: PDFDocument, page: PDFPage): StreamTextStyleHint[] {
+  const hints: StreamTextStyleHint[] = [];
+  const fontMap = extractPageFontResourceMap(pdfDoc, page);
+  const rawStreams = collectPageRawStreams(pdfDoc, page);
+
+  let ctm = [1, 0, 0, 1, 0, 0];
+  let fillHex = '#0f172a';
+  let activeFontKey = '';
+  let activeFontSize = 12;
+  let activeLeading = 14;
+  const stateStack: Array<{
+    ctm: number[];
+    fillHex: string;
+    activeFontKey: string;
+    activeFontSize: number;
+    activeLeading: number;
+  }> = [];
+
+  const streamOpRegex =
+    /\b(q|Q|BT|ET)\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(cm|Tm)\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+rg\b|(-?\d+(?:\.\d+)?)\s+g\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+k\b|\/([^\s/()<>[\]{}]+)\s+(-?\d+(?:\.\d+)?)\s+Tf\b|(-?\d+(?:\.\d+)?)\s+TL\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(T[dD])\b|\b(T\*)\b|<([0-9A-Fa-f\s]*)>\s*Tj\b|\(((?:\\.|[^\\()])*)\)\s*(Tj|')\b|\[([\s\S]*?)\]\s*TJ\b/g;
+
+  for (const rawStream of rawStreams) {
+    try {
+      const decodedBytes = decodePDFRawStream(rawStream).decode();
+      let contentStr = '';
+      const chunkSize = 8192;
+      for (let i = 0; i < decodedBytes.length; i += chunkSize) {
+        contentStr += String.fromCharCode(...decodedBytes.subarray(i, i + chunkSize));
+      }
+
+      let tm = [1, 0, 0, 1, 0, 0];
+      let tlm = [1, 0, 0, 1, 0, 0];
+      let m: RegExpExecArray | null;
+
+      while ((m = streamOpRegex.exec(contentStr)) !== null) {
+        const simpleOp = m[1];
+        if (simpleOp === 'q') {
+          stateStack.push({
+            ctm: [...ctm],
+            fillHex,
+            activeFontKey,
+            activeFontSize,
+            activeLeading,
+          });
+          continue;
+        }
+        if (simpleOp === 'Q') {
+          const popped = stateStack.pop();
+          if (popped) {
+            ctm = popped.ctm;
+            fillHex = popped.fillHex;
+            activeFontKey = popped.activeFontKey;
+            activeFontSize = popped.activeFontSize;
+            activeLeading = popped.activeLeading;
+          }
+          continue;
+        }
+        if (simpleOp === 'BT') {
+          tm = [1, 0, 0, 1, 0, 0];
+          tlm = [1, 0, 0, 1, 0, 0];
+          continue;
+        }
+        if (simpleOp === 'ET') {
+          continue;
+        }
+
+        const matOp = m[8];
+        if (matOp === 'cm') {
+          const mat = [
+            parseFloat(m[2]),
+            parseFloat(m[3]),
+            parseFloat(m[4]),
+            parseFloat(m[5]),
+            parseFloat(m[6]),
+            parseFloat(m[7]),
+          ];
+          ctm = multiplyAffineMatrices(mat, ctm);
+          continue;
+        }
+        if (matOp === 'Tm') {
+          tm = [
+            parseFloat(m[2]),
+            parseFloat(m[3]),
+            parseFloat(m[4]),
+            parseFloat(m[5]),
+            parseFloat(m[6]),
+            parseFloat(m[7]),
+          ];
+          tlm = [...tm];
+          continue;
+        }
+
+        if (m[9] !== undefined && m[10] !== undefined && m[11] !== undefined) {
+          fillHex = rgbFloatsToHex(parseFloat(m[9]), parseFloat(m[10]), parseFloat(m[11]));
+          continue;
+        }
+        if (m[12] !== undefined) {
+          const gVal = parseFloat(m[12]);
+          fillHex = rgbFloatsToHex(gVal, gVal, gVal);
+          continue;
+        }
+        if (m[13] !== undefined && m[14] !== undefined && m[15] !== undefined && m[16] !== undefined) {
+          const c = parseFloat(m[13]);
+          const mag = parseFloat(m[14]);
+          const yel = parseFloat(m[15]);
+          const kVal = parseFloat(m[16]);
+          fillHex = rgbFloatsToHex((1 - c) * (1 - kVal), (1 - mag) * (1 - kVal), (1 - yel) * (1 - kVal));
+          continue;
+        }
+        if (m[17] !== undefined && m[18] !== undefined) {
+          activeFontKey = m[17];
+          activeFontSize = Math.abs(parseFloat(m[18])) || 12;
+          continue;
+        }
+        if (m[19] !== undefined) {
+          activeLeading = parseFloat(m[19]) || activeLeading;
+          continue;
+        }
+        if (m[20] !== undefined && m[21] !== undefined && m[22]) {
+          const tx = parseFloat(m[20]) || 0;
+          const ty = parseFloat(m[21]) || 0;
+          if (m[22] === 'TD') {
+            activeLeading = -ty;
+          }
+          tlm = multiplyAffineMatrices([1, 0, 0, 1, tx, ty], tlm);
+          tm = [...tlm];
+          continue;
+        }
+        if (m[23] === 'T*') {
+          tlm = multiplyAffineMatrices([1, 0, 0, 1, 0, -activeLeading], tlm);
+          tm = [...tlm];
+          continue;
+        }
+
+        let decoded = '';
+        if (m[24] !== undefined) {
+          decoded = decodeHexPdfOperand(m[24]);
+        } else if (m[25] !== undefined) {
+          if (m[26] === "'") {
+            tlm = multiplyAffineMatrices([1, 0, 0, 1, 0, -activeLeading], tlm);
+            tm = [...tlm];
+          }
+          decoded = decodeLiteralPdfOperand(m[25]);
+        } else if (m[27] !== undefined) {
+          decoded = decodeArrayPdfOperand(m[27]);
+        } else {
+          continue;
+        }
+
+        if (decoded.trim().length > 0) {
+          const eff = multiplyAffineMatrices(tm, ctm);
+          const fInfo = fontMap.get(activeFontKey) || {
+            fontFamily: 'Helvetica',
+            isBold: false,
+            isItalic: false,
+          };
+          hints.push({
+            x: eff[4],
+            y: eff[5],
+            text: decoded.trim(),
+            fontFamily: fInfo.fontFamily,
+            isBold: fInfo.isBold,
+            isItalic: fInfo.isItalic,
+            colorHex: fillHex,
+          });
+        }
+      }
+    } catch {
+      // Ignore stream decode error
+    }
+  }
+
+  return hints;
+}
+
 /**
- * Extracts structured text lines and coordinates from all pages of a PDF using PDF.js.
+ * Extracts structured text lines and coordinates from all pages of a PDF using PDF.js,
+ * enriched with exact font family, bold/italic flags, and RGB fill colors from pdf-lib content stream inspection.
  */
 export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
   fullText: string;
@@ -675,6 +959,13 @@ export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
   const pdfjs = await getPdfJs();
   const loadingTask = pdfjs.getDocument({ data: bytes.slice(0) });
   const pdf = await loadingTask.promise;
+
+  let pdfLibDoc: PDFDocument | null = null;
+  try {
+    pdfLibDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  } catch {
+    pdfLibDoc = null;
+  }
 
   const pageTexts: string[] = [];
   const allLines: ExtractedTextLine[] = [];
@@ -688,6 +979,11 @@ export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
     const textContent = await page.getTextContent();
     const stylesMap = (textContent as unknown as { styles?: Record<string, { fontFamily?: string }> }).styles || {};
 
+    const streamHints: StreamTextStyleHint[] =
+      pdfLibDoc && p <= pdfLibDoc.getPageCount()
+        ? extractPageStreamTextStyleHints(pdfLibDoc, pdfLibDoc.getPage(p - 1))
+        : [];
+
     interface RawGlyphRun {
       str: string;
       x: number;
@@ -698,6 +994,7 @@ export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
       fontFamily: 'Helvetica' | 'TimesRoman' | 'Courier';
       isBold: boolean;
       isItalic: boolean;
+      colorHex: string;
     }
 
     const runs: RawGlyphRun[] = [];
@@ -719,25 +1016,46 @@ export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
           fontFamily = 'TimesRoman';
         }
 
-        const isBold =
+        let isBold =
           combinedFontHint.includes('bold') ||
           combinedFontHint.includes('black') ||
           combinedFontHint.includes('heavy');
-        const isItalic =
+        let isItalic =
           combinedFontHint.includes('italic') ||
           combinedFontHint.includes('oblique') ||
           Math.abs(tx[2]) > 0.05;
+        let colorHex = '#0f172a';
+
+        const runX = Math.round(tx[4] * 100) / 100;
+        const runY = Math.round(tx[5] * 100) / 100;
+
+        // Match against PDF content stream style hints for exact /BaseFont weight and RGB fill color
+        const matchedHint = streamHints.find(
+          (h) =>
+            Math.abs(h.y - runY) <= 5 &&
+            Math.abs(h.x - runX) <= 18 &&
+            (h.text === item.str.trim() ||
+              h.text.includes(item.str.trim()) ||
+              item.str.trim().includes(h.text))
+        );
+        if (matchedHint) {
+          fontFamily = matchedHint.fontFamily;
+          isBold = matchedHint.isBold || isBold;
+          isItalic = matchedHint.isItalic || isItalic;
+          colorHex = matchedHint.colorHex;
+        }
 
         runs.push({
           str: item.str,
-          x: Math.round(tx[4] * 100) / 100,
-          y: Math.round(tx[5] * 100) / 100,
-          width: Math.max(6, Math.round((item.width || item.str.length * fontSize * 0.5) * 100) / 100),
+          x: runX,
+          y: runY,
+          width: Math.max(4, Math.round((item.width || item.str.length * fontSize * 0.5) * 100) / 100),
           height: Math.max(fontSize, Math.round((item.height || fontSize) * 100) / 100),
           fontSize,
           fontFamily,
           isBold,
           isItalic,
+          colorHex,
         });
       }
     }
@@ -807,7 +1125,7 @@ export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
 
         const xPercent = Math.round(Math.max(0, Math.min(99, (first.x / pageWidthPt) * 100)) * 100) / 100;
         const yPercent = Math.round(Math.max(0, Math.min(99, (topFromPageTopPt / pageHeightPt) * 100)) * 100) / 100;
-        const widthPercent = Math.round(Math.max(1.5, Math.min(100 - xPercent, (totalWidth / pageWidthPt) * 100)) * 100) / 100;
+        const widthPercent = Math.round(Math.max(1.2, Math.min(100 - xPercent, (totalWidth / pageWidthPt) * 100)) * 100) / 100;
         const heightPercent = Math.round(Math.max(1.2, Math.min(50, (boxHeightPt / pageHeightPt) * 100)) * 100) / 100;
 
         allLines.push({
@@ -825,6 +1143,7 @@ export async function extractPdfTextAndLines(bytes: Uint8Array): Promise<{
           fontFamily: first.fontFamily,
           isBold: first.isBold,
           isItalic: first.isItalic,
+          colorHex: first.colorHex,
           xPercent,
           yPercent,
           widthPercent,
@@ -1306,22 +1625,168 @@ function decodeLiteralPdfOperand(litRaw: string): string {
 
 function decodeArrayPdfOperand(arrRaw: string): string {
   let out = '';
-  const tokenRegex = /<([0-9A-Fa-f\s]*)>|\(((?:\\.|[^\\()])*)\)/g;
+  const tokenRegex = /<([0-9A-Fa-f\s]*)>|\(((?:\\.|[^\\()])*)\)|(-?\d+(?:\.\d+)?)/g;
   let m: RegExpExecArray | null;
   while ((m = tokenRegex.exec(arrRaw)) !== null) {
     if (m[1] !== undefined) {
       out += decodeHexPdfOperand(m[1]);
     } else if (m[2] !== undefined) {
       out += decodeLiteralPdfOperand(m[2]);
+    } else if (m[3] !== undefined) {
+      const kern = parseFloat(m[3]);
+      if (kern < -180 && !out.endsWith(' ')) {
+        out += ' ';
+      }
     }
   }
   return out;
 }
 
 /**
- * Removes original PDF text operators (`Tj` / `TJ`) from a page's content stream(s)
- * when existing text is edited or deleted, so the underlying original text does not
- * remain in the PDF text layer or overlap with the replacement text.
+ * Surgically removes a target cell/token from a multi-column `[...] TJ` array operand
+ * while preserving the exact horizontal kerning position of subsequent columns on the same row.
+ */
+function surgicallyStripTargetFromTJArray(
+  arrRaw: string,
+  pageStartX: number,
+  effectiveFontSize: number,
+  target: TextRemovalTarget
+): { replacedArr: string; didStrip: boolean } {
+  interface TjPiece {
+    raw: string;
+    isString: boolean;
+    decoded: string;
+    kernVal: number;
+  }
+
+  const pieces: TjPiece[] = [];
+  const tokenRegex = /<([0-9A-Fa-f\s]*)>|\(((?:\\.|[^\\()])*)\)|(-?\d+(?:\.\d+)?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = tokenRegex.exec(arrRaw)) !== null) {
+    if (m[1] !== undefined) {
+      pieces.push({
+        raw: m[0],
+        isString: true,
+        decoded: decodeHexPdfOperand(m[1]),
+        kernVal: 0,
+      });
+    } else if (m[2] !== undefined) {
+      pieces.push({
+        raw: m[0],
+        isString: true,
+        decoded: decodeLiteralPdfOperand(m[2]),
+        kernVal: 0,
+      });
+    } else if (m[3] !== undefined) {
+      pieces.push({
+        raw: m[0],
+        isString: false,
+        decoded: '',
+        kernVal: parseFloat(m[3]) || 0,
+      });
+    }
+  }
+
+  if (pieces.length === 0) return { replacedArr: arrRaw, didStrip: false };
+
+  // Group pieces into column runs separated by large negative kerning shifts (< -180)
+  interface TjSegment {
+    pieces: TjPiece[];
+    text: string;
+    startX: number;
+    advanceThousandths: number;
+  }
+
+  const segments: TjSegment[] = [];
+  let currentPieces: TjPiece[] = [];
+  let currentText = '';
+  let runningX = pageStartX;
+  let segStartX = pageStartX;
+  let segAdvanceThousandths = 0;
+
+  const flushSegment = () => {
+    if (currentPieces.length > 0) {
+      segments.push({
+        pieces: currentPieces,
+        text: currentText,
+        startX: segStartX,
+        advanceThousandths: segAdvanceThousandths,
+      });
+      currentPieces = [];
+      currentText = '';
+      segAdvanceThousandths = 0;
+    }
+  };
+
+  for (const p of pieces) {
+    if (!p.isString && p.kernVal < -180 && currentText.trim().length > 0) {
+      flushSegment();
+      // The large negative kerning piece itself bridges to the next segment
+      const kernAdvancePt = (-p.kernVal / 1000) * effectiveFontSize;
+      runningX += kernAdvancePt;
+      segments.push({
+        pieces: [p],
+        text: '',
+        startX: runningX,
+        advanceThousandths: p.kernVal,
+      });
+      segStartX = runningX;
+      continue;
+    }
+
+    if (currentPieces.length === 0) {
+      segStartX = runningX;
+    }
+    currentPieces.push(p);
+    if (p.isString) {
+      currentText += p.decoded;
+      const charAdvThousandths = -p.decoded.length * 520;
+      segAdvanceThousandths += charAdvThousandths;
+      runningX += p.decoded.length * effectiveFontSize * 0.52;
+    } else {
+      segAdvanceThousandths += p.kernVal;
+      runningX += (-p.kernVal / 1000) * effectiveFontSize;
+    }
+  }
+  flushSegment();
+
+  const normTarget = normalizeForStreamMatch(target.originalText);
+  if (!normTarget) return { replacedArr: arrRaw, didStrip: false };
+
+  let didStrip = false;
+  const outTokens: string[] = [];
+
+  for (const seg of segments) {
+    const normSeg = normalizeForStreamMatch(seg.text);
+    const xMatches =
+      typeof target.originXPt === 'number'
+        ? Math.abs(seg.startX - target.originXPt) <= Math.max(24, (target.originWidthPt || 40) + 16)
+        : true;
+
+    if (normSeg && normSeg === normTarget && xMatches && !didStrip) {
+      didStrip = true;
+      // Replace the removed string glyphs with an equivalent negative kerning shift so following columns do not shift left
+      const replacementKern = Math.round(seg.advanceThousandths);
+      if (replacementKern !== 0) {
+        outTokens.push(`${replacementKern}`);
+      }
+    } else {
+      for (const p of seg.pieces) {
+        outTokens.push(p.raw);
+      }
+    }
+  }
+
+  return {
+    replacedArr: outTokens.join(' '),
+    didStrip,
+  };
+}
+
+/**
+ * Removes original PDF text operators (`Tj` / `TJ` / `'`) from a page's content stream(s)
+ * when existing text is edited or deleted, while 100% preserving all vector background fills,
+ * table cell colors, borders, gradients, watermarks, and images.
  */
 function removeOriginalTextFromPageContentStreams(
   pdfDoc: PDFDocument,
@@ -1331,25 +1796,21 @@ function removeOriginalTextFromPageContentStreams(
   const removedIds = new Set<string>();
   if (targets.length === 0) return removedIds;
 
-  const contentsEntry = page.node.Contents();
-  if (!contentsEntry) return removedIds;
+  const rawStreams = collectPageRawStreams(pdfDoc, page);
+  if (rawStreams.length === 0) return removedIds;
 
-  const rawStreams: PDFRawStream[] = [];
-  if (contentsEntry instanceof PDFRef) {
-    const lookedUp = pdfDoc.context.lookup(contentsEntry);
-    if (lookedUp instanceof PDFRawStream) rawStreams.push(lookedUp);
-  } else if (contentsEntry instanceof PDFArray) {
-    for (let i = 0; i < contentsEntry.size(); i++) {
-      const item = contentsEntry.get(i);
-      const lookedUp = item instanceof PDFRef ? pdfDoc.context.lookup(item) : item;
-      if (lookedUp instanceof PDFRawStream) rawStreams.push(lookedUp);
-    }
-  } else if (contentsEntry instanceof PDFRawStream) {
-    rawStreams.push(contentsEntry);
-  }
+  // Track CTM (`cm`) and graphics state (`q`/`Q`) across the page stream(s)
+  let ctm = [1, 0, 0, 1, 0, 0];
+  let activeFontSize = 12;
+  let activeLeading = 14;
+  const stateStack: Array<{
+    ctm: number[];
+    activeFontSize: number;
+    activeLeading: number;
+  }> = [];
 
-  const tokenRegex =
-    /(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+Tm\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+T[dD]\b|<([0-9A-Fa-f\s]*)>\s*Tj\b|\(((?:\\.|[^\\()])*)\)\s*Tj\b|\[([\s\S]*?)\]\s*TJ\b/g;
+  const innerTokenRegex =
+    /\/([^\s/()<>[\]{}]+)\s+(-?\d+(?:\.\d+)?)\s+Tf\b|(-?\d+(?:\.\d+)?)\s+TL\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+Tm\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(T[dD])\b|\b(T\*)\b|<([0-9A-Fa-f\s]*)>\s*Tj\b|\(((?:\\.|[^\\()])*)\)\s*(Tj|')\b|\[([\s\S]*?)\]\s*TJ\b/g;
 
   for (const rawStream of rawStreams) {
     try {
@@ -1361,94 +1822,242 @@ function removeOriginalTextFromPageContentStreams(
       }
 
       let streamChanged = false;
-      const updatedContent = contentStr.replace(/\bBT\b([\s\S]*?)\bET\b/g, (fullBlock, innerBlock: string) => {
-        let curX: number | null = null;
-        let curY: number | null = null;
-        let scaleX = 1;
-        let scaleY = 1;
 
-        const replacedInner = innerBlock.replace(
-          tokenRegex,
-          (
-            match,
-            tmA,
-            _tmB,
-            _tmC,
-            tmD,
-            tmE,
-            tmF,
-            tdX,
-            tdY,
-            hexTj,
-            litTj,
-            arrTJ
-          ) => {
-            if (tmE !== undefined && tmF !== undefined) {
-              scaleX = parseFloat(tmA) || 1;
-              scaleY = parseFloat(tmD) || 1;
-              curX = parseFloat(tmE);
-              curY = parseFloat(tmF);
-              return match;
+      // Scan top-level chunks (outside and inside BT...ET) so CTM `cm` and `q`/`Q` are accurately tracked
+      const blockRegex =
+        /\b(q|Q)\b|(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+cm\b|\bBT\b([\s\S]*?)\bET\b/g;
+
+      const updatedContent = contentStr.replace(
+        blockRegex,
+        (
+          fullMatch,
+          qOp,
+          cmA,
+          cmB,
+          cmC,
+          cmD,
+          cmE,
+          cmF,
+          btInner: string | undefined
+        ) => {
+          if (qOp === 'q') {
+            stateStack.push({
+              ctm: [...ctm],
+              activeFontSize,
+              activeLeading,
+            });
+            return fullMatch;
+          }
+          if (qOp === 'Q') {
+            const popped = stateStack.pop();
+            if (popped) {
+              ctm = popped.ctm;
+              activeFontSize = popped.activeFontSize;
+              activeLeading = popped.activeLeading;
             }
-            if (tdX !== undefined && tdY !== undefined) {
-              curX = (curX ?? 0) + parseFloat(tdX) * scaleX;
-              curY = (curY ?? 0) + parseFloat(tdY) * scaleY;
-              return match;
-            }
+            return fullMatch;
+          }
+          if (cmA !== undefined && cmF !== undefined) {
+            const mat = [
+              parseFloat(cmA),
+              parseFloat(cmB),
+              parseFloat(cmC),
+              parseFloat(cmD),
+              parseFloat(cmE),
+              parseFloat(cmF),
+            ];
+            ctm = multiplyAffineMatrices(mat, ctm);
+            return fullMatch;
+          }
 
-            let decodedText = '';
-            if (hexTj !== undefined) {
-              decodedText = decodeHexPdfOperand(hexTj);
-            } else if (litTj !== undefined) {
-              decodedText = decodeLiteralPdfOperand(litTj);
-            } else if (arrTJ !== undefined) {
-              decodedText = decodeArrayPdfOperand(arrTJ);
-            } else {
-              return match;
-            }
+          if (btInner === undefined) return fullMatch;
 
-            const normDecoded = normalizeForStreamMatch(decodedText);
+          let tm = [1, 0, 0, 1, 0, 0];
+          let tlm = [1, 0, 0, 1, 0, 0];
+          let hasPositioned = false;
 
-            for (const t of targets) {
-              const normTarget = normalizeForStreamMatch(t.originalText);
-              const yTol = Math.max(5.5, (t.fontSize || 12) * 0.55);
-              const hasCoord = typeof t.originYPt === 'number';
-              const sameY =
-                hasCoord && curY !== null ? Math.abs(curY - t.originYPt!) <= yTol : false;
-              const sameX =
-                typeof t.originXPt === 'number' && curX !== null
-                  ? curX >= t.originXPt - 14 &&
-                    curX <= t.originXPt + (t.originWidthPt || 350) + 14
-                  : true;
+          const replacedInner = btInner.replace(
+            innerTokenRegex,
+            (
+              match,
+              _tfFont,
+              tfSize,
+              tlVal,
+              tmA,
+              tmB,
+              tmC,
+              tmD,
+              tmE,
+              tmF,
+              tdX,
+              tdY,
+              tdOp,
+              tStar,
+              hexTj,
+              litTj,
+              litOp,
+              arrTJ
+            ) => {
+              if (tfSize !== undefined) {
+                activeFontSize = Math.abs(parseFloat(tfSize)) || 12;
+                return match;
+              }
+              if (tlVal !== undefined) {
+                activeLeading = parseFloat(tlVal) || activeLeading;
+                return match;
+              }
+              if (tmE !== undefined && tmF !== undefined) {
+                tm = [
+                  parseFloat(tmA) || 1,
+                  parseFloat(tmB) || 0,
+                  parseFloat(tmC) || 0,
+                  parseFloat(tmD) || 1,
+                  parseFloat(tmE) || 0,
+                  parseFloat(tmF) || 0,
+                ];
+                tlm = [...tm];
+                hasPositioned = true;
+                return match;
+              }
+              if (tdX !== undefined && tdY !== undefined) {
+                const tx = parseFloat(tdX) || 0;
+                const ty = parseFloat(tdY) || 0;
+                if (tdOp === 'TD') {
+                  activeLeading = -ty;
+                }
+                tlm = multiplyAffineMatrices([1, 0, 0, 1, tx, ty], tlm);
+                tm = [...tlm];
+                hasPositioned = true;
+                return match;
+              }
+              if (tStar !== undefined) {
+                tlm = multiplyAffineMatrices([1, 0, 0, 1, 0, -activeLeading], tlm);
+                tm = [...tlm];
+                hasPositioned = true;
+                return match;
+              }
 
-              if (sameY && sameX) {
+              let decodedText = '';
+              if (hexTj !== undefined) {
+                decodedText = decodeHexPdfOperand(hexTj);
+              } else if (litTj !== undefined) {
+                if (litOp === "'") {
+                  tlm = multiplyAffineMatrices([1, 0, 0, 1, 0, -activeLeading], tlm);
+                  tm = [...tlm];
+                  hasPositioned = true;
+                }
+                decodedText = decodeLiteralPdfOperand(litTj);
+              } else if (arrTJ !== undefined) {
+                decodedText = decodeArrayPdfOperand(arrTJ);
+              } else {
+                return match;
+              }
+
+              const eff = multiplyAffineMatrices(tm, ctm);
+              const curX = hasPositioned ? eff[4] : null;
+              const curY = hasPositioned ? eff[5] : null;
+              const effFontSize =
+                Math.abs(activeFontSize * Math.hypot(eff[0], eff[1])) ||
+                Math.abs(eff[3]) ||
+                activeFontSize;
+
+              // Advance tm horizontally for any subsequent Tj/TJ on the same line without an intermediate Td/Tm
+              const advanceTextSpace = Math.max(1, decodedText.length) * activeFontSize * 0.5;
+              tm = multiplyAffineMatrices([1, 0, 0, 1, advanceTextSpace, 0], tm);
+
+              const normDecoded = normalizeForStreamMatch(decodedText);
+
+              for (const t of targets) {
+                const normTarget = normalizeForStreamMatch(t.originalText);
+                const yTol = Math.max(6, (t.fontSize || effFontSize || 12) * 0.65);
+                const hasCoord = typeof t.originYPt === 'number';
+                const sameY =
+                  hasCoord && curY !== null ? Math.abs(curY - t.originYPt!) <= yTol : false;
+                const sameX =
+                  typeof t.originXPt === 'number' && curX !== null
+                    ? curX >= t.originXPt - 16 &&
+                      curX <= t.originXPt + (t.originWidthPt || 350) + 16
+                    : true;
+                const sameXTight =
+                  typeof t.originXPt === 'number' && curX !== null
+                    ? Math.abs(curX - t.originXPt) <= 10
+                    : false;
+
+                // 1. Exact or substring match at the target coordinates
+                if (sameY && sameX) {
+                  // If this is a multi-column TJ array containing more than just the target cell, strip only the target cell
+                  if (
+                    arrTJ !== undefined &&
+                    normDecoded &&
+                    normTarget &&
+                    normDecoded !== normTarget &&
+                    normDecoded.includes(normTarget)
+                  ) {
+                    const surgical = surgicallyStripTargetFromTJArray(
+                      arrTJ,
+                      curX ?? t.originXPt ?? 0,
+                      effFontSize,
+                      t
+                    );
+                    if (surgical.didStrip) {
+                      removedIds.add(t.id);
+                      streamChanged = true;
+                      return `[${surgical.replacedArr}] TJ`;
+                    }
+                  }
+
+                  if (
+                    !normDecoded ||
+                    !normTarget ||
+                    normDecoded === normTarget ||
+                    normTarget.includes(normDecoded) ||
+                    (sameXTight && decodedText.length <= Math.max(3, t.originalText.length + 2))
+                  ) {
+                    removedIds.add(t.id);
+                    streamChanged = true;
+                    return litOp === "'" ? "''" : '() Tj';
+                  }
+                }
+
+                // 2. Multi-column TJ array where the array started earlier on the row (curX < originXPt)
                 if (
-                  !normDecoded ||
-                  !normTarget ||
-                  normTarget.includes(normDecoded) ||
+                  sameY &&
+                  arrTJ !== undefined &&
+                  normDecoded &&
+                  normTarget &&
+                  normDecoded !== normTarget &&
                   normDecoded.includes(normTarget)
                 ) {
-                  removedIds.add(t.id);
-                  streamChanged = true;
-                  return '() Tj';
+                  const surgical = surgicallyStripTargetFromTJArray(
+                    arrTJ,
+                    curX ?? 0,
+                    effFontSize,
+                    t
+                  );
+                  if (surgical.didStrip) {
+                    removedIds.add(t.id);
+                    streamChanged = true;
+                    return `[${surgical.replacedArr}] TJ`;
+                  }
+                }
+
+                // 3. Fallback when coordinates are unpositioned or match on same Y
+                if (normDecoded.length >= 1 && normTarget.length >= 1 && normDecoded === normTarget) {
+                  if (!hasCoord || curY === null || (sameY && sameX)) {
+                    removedIds.add(t.id);
+                    streamChanged = true;
+                    return litOp === "'" ? "''" : '() Tj';
+                  }
                 }
               }
 
-              if (normDecoded.length >= 2 && normTarget.length >= 2 && normDecoded === normTarget) {
-                if (!hasCoord || curY === null || sameY) {
-                  removedIds.add(t.id);
-                  streamChanged = true;
-                  return '() Tj';
-                }
-              }
+              return match;
             }
+          );
 
-            return match;
-          }
-        );
-
-        return `BT${replacedInner}ET`;
-      });
+          return `BT${replacedInner}ET`;
+        }
+      );
 
       if (streamChanged) {
         const newBytes = new Uint8Array(updatedContent.length);
@@ -1462,11 +2071,81 @@ function removeOriginalTextFromPageContentStreams(
         rawStream.dict.set(PDFName.of('Length'), PDFNumber.of(newBytes.length));
       }
     } catch {
-      // If a non-standard stream filter cannot be decoded, fallback mask handles it
+      // Ignore un-decodable stream filter
     }
   }
 
   return removedIds;
+}
+
+/**
+ * Strips the original PDF text operators for active `isExistingTextEdit` annotations
+ * and returns the modified PDF bytes + list of stripped annotation IDs.
+ * Used by the live browser canvas preview so edited text is genuinely removed from the rendered
+ * PDF page without placing any destructive white boxes over colored backgrounds or tables.
+ */
+export async function stripEditedTextFromPdfBytes(
+  bytes: Uint8Array,
+  annotations: EditorAnnotationItem[],
+  onlyPageNumber?: number
+): Promise<{ bytes: Uint8Array; removedIds: string[] }> {
+  const relevant = annotations.filter(
+    (a) =>
+      a.isExistingTextEdit &&
+      a.originalText &&
+      (onlyPageNumber === undefined || a.pageNumber === onlyPageNumber)
+  );
+  if (relevant.length === 0) {
+    return { bytes, removedIds: [] };
+  }
+
+  try {
+    const pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    const pages = pdfDoc.getPages();
+    const allRemoved = new Set<string>();
+
+    for (let pIdx = 0; pIdx < pages.length; pIdx++) {
+      const pageNum = pIdx + 1;
+      if (onlyPageNumber !== undefined && pageNum !== onlyPageNumber) continue;
+      const pageEdits = relevant.filter((a) => a.pageNumber === pageNum);
+      if (pageEdits.length === 0) continue;
+
+      const page = pages[pIdx];
+      const mediaBox = page.getMediaBox();
+      const { width, height } = page.getSize();
+
+      const targets: TextRemovalTarget[] = pageEdits.map((item) => {
+        const fSize = item.fontSize || 12;
+        const origXPct = item.originXPercent ?? item.xPercent;
+        const origYPct = item.originYPercent ?? item.yPercent;
+        const origWPct = item.originWidthPercent ?? item.widthPercent;
+        const fallbackOriginXPt = mediaBox.x + (origXPct / 100) * width;
+        const fallbackOriginYPt = mediaBox.y + height - (origYPct / 100) * height - fSize * 0.85;
+        const fallbackOriginWidthPt = (origWPct / 100) * width;
+
+        return {
+          id: item.id,
+          originalText: item.originalText || '',
+          originXPt: item.originXPt ?? fallbackOriginXPt,
+          originYPt: item.originYPt ?? fallbackOriginYPt,
+          originWidthPt: item.originWidthPt ?? fallbackOriginWidthPt,
+          fontSize: fSize,
+        };
+      });
+
+      const removedOnPage = removeOriginalTextFromPageContentStreams(pdfDoc, page, targets);
+      removedOnPage.forEach((id) => allRemoved.add(id));
+    }
+
+    if (allRemoved.size === 0) {
+      return { bytes, removedIds: [] };
+    }
+
+    const outBytes = await pdfDoc.save({ useObjectStreams: false });
+    return { bytes: outBytes, removedIds: Array.from(allRemoved) };
+  } catch {
+    return { bytes, removedIds: [] };
+  }
 }
 
 async function resolveStandardPdfFont(
@@ -1725,22 +2404,24 @@ export async function applyEditorAnnotationsToPdf(
 
       const wasRemovedFromStream = streamRemovedIds.has(item.id);
       const bgHex = item.backgroundColorHex || item.fillHex;
-      const hasCustomBg =
+      const hasExplicitBg =
         typeof bgHex === 'string' &&
-        bgHex.length > 0 &&
+        bgHex.trim().length > 0 &&
         bgHex !== 'transparent' &&
-        bgHex !== 'none' &&
-        bgHex.toLowerCase() !== '#ffffff';
+        bgHex !== 'none';
 
-      // If the underlying PDF stream used custom unmapped CIDs (not stripped) OR user chose a background fill,
-      // mask the exact original text bounding box at its original position
-      if (!wasRemovedFromStream || hasCustomBg) {
-        const bgCol = bgHex ? hexToRgbTuple(bgHex) : [1, 1, 1];
+      // NON-DESTRUCTIVE BACKGROUND PRESERVATION:
+      // When original text is removed from the PDF content stream (`wasRemovedFromStream === true`),
+      // NEVER draw a generic white rectangle over the cell, so colored table cells, borders, gradients,
+      // and watermarks remain 100% intact. Only draw a background fill if the user explicitly chose one,
+      // or if the page is a scanned raster image (`!wasRemovedFromStream`) with a sampled background color.
+      if (hasExplicitBg && (item.backgroundColorHex || !wasRemovedFromStream)) {
+        const bgCol = hexToRgbTuple(bgHex);
         page.drawRectangle({
-          x: Math.max(mediaBox.x, origXPt - 1.5),
-          y: Math.max(mediaBox.y, origBaselineYPt - fSize * 0.26),
-          width: origBoxW + 4,
-          height: Math.max(origBoxH, fSize * 1.15),
+          x: Math.max(mediaBox.x, origXPt - 0.5),
+          y: Math.max(mediaBox.y, origBaselineYPt - fSize * 0.2),
+          width: Math.max(4, origBoxW + 1),
+          height: Math.max(origBoxH * 0.92, fSize * 1.05),
           color: rgb(bgCol[0], bgCol[1], bgCol[2]),
           opacity: 1,
         });
@@ -2079,14 +2760,33 @@ export async function applyEditorAnnotationsToPdf(
         const embeddedImg = item.imageDataUrl.includes('image/png')
           ? await pdfDoc.embedPng(imgBytes)
           : await pdfDoc.embedJpg(imgBytes);
-        page.drawImage(embeddedImg, {
-          x: pdfX,
-          y: pdfY,
-          width: boxW,
-          height: boxH,
-          opacity,
-          rotate: item.rotationDeg ? degrees(item.rotationDeg) : undefined,
-        });
+        const rotDeg = item.rotationDeg || 0;
+        if (rotDeg !== 0) {
+          // Rotate clockwise around center (cx, cy) to match CSS transform-origin: center
+          const cx = pdfX + boxW / 2;
+          const cy = pdfY + boxH / 2;
+          const rad = (-rotDeg * Math.PI) / 180;
+          const cosA = Math.cos(rad);
+          const sinA = Math.sin(rad);
+          const rotX = cx + (-boxW / 2) * cosA - (-boxH / 2) * sinA;
+          const rotY = cy + (-boxW / 2) * sinA + (-boxH / 2) * cosA;
+          page.drawImage(embeddedImg, {
+            x: rotX,
+            y: rotY,
+            width: boxW,
+            height: boxH,
+            opacity,
+            rotate: degrees(-rotDeg),
+          });
+        } else {
+          page.drawImage(embeddedImg, {
+            x: pdfX,
+            y: pdfY,
+            width: boxW,
+            height: boxH,
+            opacity,
+          });
+        }
       }
     } else if (
       item.type === 'symbol-check' ||
