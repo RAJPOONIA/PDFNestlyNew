@@ -23,13 +23,27 @@ import {
   BarChart3,
   Server,
   Mail,
+  Globe,
+  MessageSquare,
 } from 'lucide-react';
 import { useAuth, ClientUserProfile } from '@/components/AuthProvider';
 import { PDF_TOOLS_REGISTRY } from '@/lib/tools-registry';
 import { formatFileSize } from '@/lib/pdf-utils';
+import {
+  AdminSupportTab,
+  SupportTicketItem,
+  SupportStats,
+} from '@/components/admin/AdminSupportTab';
+import {
+  AdminDemographicsTab,
+  DetailedAnalyticsData,
+} from '@/components/admin/AdminDemographicsTab';
+import { AnalyticsTimeRange } from '@/lib/platform-store';
 
 type AdminTab =
   | 'overview'
+  | 'demographics'
+  | 'support'
   | 'users'
   | 'activity'
   | 'jobs'
@@ -153,6 +167,22 @@ export default function AdminPlatformPage() {
     reason?: string;
   } | null>(null);
 
+  // Support & Feedback Tickets state
+  const [supportTickets, setSupportTickets] = useState<SupportTicketItem[]>([]);
+  const [supportStats, setSupportStats] = useState<SupportStats>({
+    total: 0,
+    open: 0,
+    inProgress: 0,
+    resolved: 0,
+  });
+  const [isSupportLoading, setIsSupportLoading] = useState(false);
+
+  // Audience Demographics & Multi-Range Analytics state
+  const [analyticsRange, setAnalyticsRange] = useState<AnalyticsTimeRange>('28d');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [detailedAnalytics, setDetailedAnalytics] = useState<DetailedAnalyticsData | null>(null);
+
   // Activity & PDF Jobs & Audit Logs state
   const [activityEvents, setActivityEvents] = useState<
     Array<{
@@ -168,6 +198,8 @@ export default function AdminPlatformPage() {
       durationMs: number | null;
       fileSizeBytes: number | null;
       jobId: string | null;
+      country?: string | null;
+      countryCode?: string | null;
       createdAt: string;
     }>
   >([]);
@@ -250,19 +282,29 @@ export default function AdminPlatformPage() {
   const fetchOverviewAndSettings = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(
-        `/api/admin/overview?rangeDays=${rangeDays}`,
-        { cache: 'no-store' }
-      );
+      const params = new URLSearchParams({
+        range: analyticsRange,
+      });
+      if (analyticsRange === 'custom' && customStartDate && customEndDate) {
+        params.set('startDate', customStartDate);
+        params.set('endDate', customEndDate);
+      } else {
+        params.set('rangeDays', String(rangeDays));
+      }
+
+      const res = await fetch(`/api/admin/overview?${params.toString()}`, {
+        cache: 'no-store',
+      });
       if (res.status === 401 || res.status === 403) {
         setAccessDenied(true);
         setIsLoading(false);
         return;
       }
       const data = await res.json();
-      if (res.ok && data.overview) {
+      if (res.ok) {
         setAccessDenied(false);
-        setOverview(data.overview);
+        if (data.overview) setOverview(data.overview);
+        if (data.analytics) setDetailedAnalytics(data.analytics);
         if (data.settings) {
           setSettingsForm({
             registrationEnabled: data.settings.registrationEnabled,
@@ -283,7 +325,25 @@ export default function AdminPlatformPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [rangeDays]);
+  }, [rangeDays, analyticsRange, customStartDate, customEndDate]);
+
+  const fetchSupportTickets = useCallback(async () => {
+    setIsSupportLoading(true);
+    try {
+      const res = await fetch('/api/admin/support?status=all', {
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSupportTickets(data.tickets || []);
+        if (data.stats) setSupportStats(data.stats);
+      }
+    } catch {
+      // Ignore network errors
+    } finally {
+      setIsSupportLoading(false);
+    }
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     const params = new URLSearchParams({
@@ -442,6 +502,7 @@ export default function AdminPlatformPage() {
         fetchUsers();
         fetchEventsAndJobs();
         fetchEmailDiagnostics();
+        fetchSupportTickets();
       }
     }
   }, [
@@ -451,6 +512,7 @@ export default function AdminPlatformPage() {
     fetchUsers,
     fetchEventsAndJobs,
     fetchEmailDiagnostics,
+    fetchSupportTickets,
   ]);
 
   const handleOpenUserDetail = async (uid: string) => {
@@ -753,6 +815,12 @@ export default function AdminPlatformPage() {
         >
           {[
             { id: 'overview', label: 'Overview & Analytics', icon: BarChart3 },
+            { id: 'demographics', label: 'Audience Demographics', icon: Globe },
+            {
+              id: 'support',
+              label: `Support & Inquiries (${supportStats.open > 0 ? `${supportStats.open} Open` : supportStats.total})`,
+              icon: MessageSquare,
+            },
             {
               id: 'users',
               label: `User Management (${overview?.users.total ?? usersTotal})`,
@@ -997,6 +1065,45 @@ export default function AdminPlatformPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* AUDIENCE DEMOGRAPHICS TAB */}
+        {activeTab === 'demographics' && (
+          <AdminDemographicsTab
+            analytics={detailedAnalytics}
+            selectedRange={analyticsRange}
+            onRangeChange={(r) => {
+              setAnalyticsRange(r);
+              if (r !== 'custom') {
+                const days = r === 'today' ? 1 : r === '7d' ? 7 : r === '28d' ? 28 : r === '90d' ? 90 : 365;
+                setRangeDays(days);
+              }
+            }}
+            customStartDate={customStartDate}
+            customEndDate={customEndDate}
+            onCustomDateChange={(s, e) => {
+              setCustomStartDate(s);
+              setCustomEndDate(e);
+            }}
+            isLoading={isLoading}
+            onRefresh={fetchOverviewAndSettings}
+          />
+        )}
+
+        {/* SUPPORT & FEEDBACK TICKETS TAB */}
+        {activeTab === 'support' && (
+          <AdminSupportTab
+            tickets={supportTickets}
+            stats={supportStats}
+            isLoading={isSupportLoading}
+            onRefresh={fetchSupportTickets}
+            onReplySuccess={(msg) => {
+              setStatusBanner({ type: 'success', text: msg });
+            }}
+            onError={(err) => {
+              setStatusBanner({ type: 'error', text: err });
+            }}
+          />
         )}
 
         {/* TAB 2: USER MANAGEMENT */}
@@ -1312,6 +1419,7 @@ export default function AdminPlatformPage() {
                   <tr className="border-b border-[#E4E4E7] dark:border-[#3F3F46] text-[11px] text-[#71717A] uppercase">
                     <th className="py-2.5 px-3">Event Type</th>
                     <th className="py-2.5 px-3">User / Session</th>
+                    <th className="py-2.5 px-3">Origin Country</th>
                     <th className="py-2.5 px-3">Tool / Page</th>
                     <th className="py-2.5 px-3">Status</th>
                     <th className="py-2.5 px-3">Metrics</th>
@@ -1334,6 +1442,12 @@ export default function AdminPlatformPage() {
                             {e.anonymousSessionId || 'anonymous'}
                           </span>
                         )}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#18181B] dark:text-[#FAFAFA]">
+                          <span>🌐</span>
+                          <span>{e.country || 'Global'}</span>
+                        </span>
                       </td>
                       <td className="py-2.5 px-3">
                         {e.toolName || e.pagePath || '—'}

@@ -613,8 +613,9 @@ function buildVerificationEmailContent(payload: EmailVerificationPayload): {
 }
 
 async function dispatchTransactionalEmail(params: {
-  type: 'password_reset' | 'email_verification';
+  type: 'password_reset' | 'email_verification' | 'support_reply';
   to: string;
+  from?: string;
   subject: string;
   text: string;
   html: string;
@@ -622,7 +623,7 @@ async function dispatchTransactionalEmail(params: {
   if (customMockSmtpTransport) {
     const smtp = getPrivateEmailEnv();
     const fromHeader =
-      smtp.from || 'PDFNestly Support <support@pdfnestly.com>';
+      params.from || smtp.from || 'PDFNestly Support <support@pdfnestly.com>';
     const info = await customMockSmtpTransport.sendMail({
       from: fromHeader,
       to: params.to,
@@ -934,3 +935,72 @@ export async function sendAdminDiagnosticTestEmail(adminEmail: string): Promise<
     };
   }
 }
+
+export interface SupportReplyEmailPayload {
+  to: string;
+  recipientName: string;
+  ticketId: string;
+  topic: string;
+  replyMessage: string;
+  originalMessage?: string;
+  adminEmail: string;
+}
+
+/**
+ * Sends a real support response email to a user inquiry directly from support@pdfnestly.com
+ * using Namecheap Private Email SMTP or configured provider.
+ */
+export async function sendSupportReplyEmail(
+  payload: SupportReplyEmailPayload
+): Promise<TransactionalEmailResult> {
+  const fromHeader = 'PDFNestly Support <support@pdfnestly.com>';
+  const subject = `Re: [${payload.ticketId}] ${payload.topic} — PDFNestly Support`;
+  const text = [
+    `Hi ${payload.recipientName || 'there'},`,
+    '',
+    payload.replyMessage,
+    '',
+    '--------------------------------------------------',
+    `Ticket ID: ${payload.ticketId}`,
+    `Topic: ${payload.topic}`,
+    payload.originalMessage ? `Your inquiry: "${payload.originalMessage}"` : '',
+    '--------------------------------------------------',
+    'PDFNestly Support & Engineering Team',
+    'support@pdfnestly.com | https://pdfnestly.com',
+  ].filter(Boolean).join('\n');
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+  <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #18181B; line-height: 1.6; max-width: 600px; margin: 0 auto; padding: 24px; background: #FAFAFA;">
+    <div style="border: 1px solid #E4E4E7; border-radius: 12px; padding: 28px; background: #FFFFFF; box-shadow: 0 4px 12px rgba(0,0,0,0.04);">
+      <div style="border-bottom: 2px solid #B91C1C; padding-bottom: 16px; margin-bottom: 20px;">
+        <h2 style="margin: 0; color: #B91C1C; font-size: 20px; font-weight: 800; letter-spacing: -0.5px;">PDFNestly Support</h2>
+        <span style="font-size: 12px; color: #71717A;">Official Response to Ticket #${payload.ticketId} &bull; ${payload.topic}</span>
+      </div>
+      <p style="font-size: 14px; color: #18181B; margin-top: 0;">
+        Hi <strong>${(payload.recipientName || 'there').replace(/</g, '&lt;')}</strong>,
+      </p>
+      <div style="background: #F4F4F5; border-left: 4px solid #B91C1C; padding: 16px; border-radius: 6px; margin: 18px 0; font-size: 14px; color: #18181B; white-space: pre-wrap; line-height: 1.6;">${payload.replyMessage.replace(/</g, '&lt;')}</div>
+      ${payload.originalMessage ? `
+      <div style="background: #FAFAFA; border: 1px solid #E4E4E7; border-radius: 6px; padding: 12px 16px; margin-top: 20px; font-size: 12px; color: #71717A;">
+        <strong style="color: #52525B;">Your original message:</strong>
+        <p style="margin: 6px 0 0 0; font-style: italic;">"${payload.originalMessage.replace(/</g, '&lt;')}"</p>
+      </div>` : ''}
+      <hr style="border: none; border-top: 1px solid #E4E4E7; margin: 24px 0 16px 0;" />
+      <p style="font-size: 12px; color: #71717A; margin-bottom: 0;">
+        Sent directly from <strong>support@pdfnestly.com</strong>. You may reply to this email to continue the conversation.
+      </p>
+    </div>
+  </body>
+</html>`;
+
+  return dispatchTransactionalEmail({
+    type: 'support_reply',
+    to: payload.to,
+    from: fromHeader,
+    subject,
+    text,
+    html,
+  });
+}
+

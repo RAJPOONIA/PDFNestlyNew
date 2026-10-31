@@ -242,6 +242,35 @@ export default function UserDashboardPage() {
   return (
     <div className="bg-[#FAFAFA] dark:bg-[#09090B] min-h-[calc(100vh-4rem)] py-8 px-6">
       <div className="max-w-7xl mx-auto space-y-6">
+        {/* Administrator Guidance Banner (Distinct Separation of Admin vs User Panel) */}
+        {profile.role === 'admin' && (
+          <div className="bg-gradient-to-r from-red-900/15 via-[#B91C1C]/10 to-transparent border border-[#B91C1C]/35 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span className="p-2.5 rounded-xl bg-[#B91C1C] text-white shadow-xs shrink-0">
+                <Shield className="w-5 h-5" />
+              </span>
+              <div>
+                <div className="text-xs font-bold text-[#18181B] dark:text-[#FAFAFA] flex items-center gap-2">
+                  <span>Administrator Account Workspace Notice</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#B91C1C] text-white uppercase tracking-wider font-extrabold">
+                    Admin Level
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#52525B] dark:text-[#A1A1AA] mt-0.5">
+                  You are currently viewing your personal user profile (`/dashboard`). The PDFNestly Command Center for platform management, audience demographics, user activity, and support replies is located in the dedicated Admin Panel.
+                </p>
+              </div>
+            </div>
+            <Link
+              href="/admin"
+              className="px-4 py-2 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] text-white text-xs font-bold transition-colors shadow-xs shrink-0 inline-flex items-center gap-1.5"
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>Go to Admin Panel →</span>
+            </Link>
+          </div>
+        )}
+
         {/* Top Profile Header Card */}
         <div className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-2xl p-6 shadow-2xs flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
           <div className="flex items-center gap-4">

@@ -3124,9 +3124,9 @@ export function PdfEditorWorkspace({
                     onClick={() =>
                       handleConvertCurrentPdf(fmt.id as 'docx' | 'xlsx' | 'html' | 'txt' | 'jpg' | 'png')
                     }
-                    className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 transition-colors"
+                    className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 transition-colors select-none"
                   >
-                    <FIcon className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+                    <FIcon className="w-4 h-4 text-slate-800 dark:text-slate-200" />
                     <span>{fmt.label}</span>
                   </button>
                 );
@@ -3182,9 +3182,9 @@ export function PdfEditorWorkspace({
                 data-testid="studio-ai-summarize-button"
                 disabled={!pdfBytes}
                 onClick={handleAiSummarize}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <Sparkles className="w-4 h-4 text-purple-600" />
+                <Sparkles className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                 <span>Summarize</span>
               </button>
               <button
@@ -3192,9 +3192,9 @@ export function PdfEditorWorkspace({
                 data-testid="studio-ai-proofread-button"
                 disabled={!pdfBytes}
                 onClick={handleAiChecker}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <CheckCircle className="w-4 h-4 text-emerald-600" />
+                <CheckCircle className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span>AI Proofreader</span>
               </button>
               <button
@@ -3202,9 +3202,9 @@ export function PdfEditorWorkspace({
                 data-testid="studio-ai-stamp-button"
                 disabled={!pdfBytes}
                 onClick={handleAiImageGenerator}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <Wand2 className="w-4 h-4 text-blue-600" />
+                <Wand2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span>AI Stamp Generator</span>
               </button>
               <button
@@ -3212,9 +3212,9 @@ export function PdfEditorWorkspace({
                 data-testid="studio-ai-translate-button"
                 disabled={!pdfBytes || isTranslating}
                 onClick={() => handleTranslateActivePage(targetLanguage, false)}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <Globe className="w-4 h-4 text-sky-600" />
+                <Globe className="w-4 h-4 text-sky-600 dark:text-sky-400" />
                 <span>AI Translate</span>
               </button>
             </div>
@@ -3238,10 +3238,10 @@ export function PdfEditorWorkspace({
                       setEditingId(null);
                       setActiveTool(f.id as EditorToolMode);
                     }}
-                    className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
+                    className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                       isActive
-                        ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs'
-                        : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                        ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                        : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                     }`}
                   >
                     <FIcon className="w-4 h-4" />
@@ -3253,7 +3253,7 @@ export function PdfEditorWorkspace({
                 type="button"
                 onClick={handleDetectFormFields}
                 disabled={!pdfBytes}
-                className="flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40"
+                className="flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 select-none"
               >
                 <Wand2 className="w-4 h-4" />
                 <span>Auto-Detect</span>
@@ -3269,9 +3269,9 @@ export function PdfEditorWorkspace({
                   setCreatedShareUrl('');
                   setShowShareFormModal(true);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
               >
-                <Share2 className="w-4 h-4 text-blue-600" />
+                <Share2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span>Create Share Link</span>
               </button>
               <button
@@ -3282,27 +3282,27 @@ export function PdfEditorWorkspace({
                   const body = encodeURIComponent(`Please review the document: ${fileName}`);
                   window.open(`mailto:?subject=${subject}&body=${body}`, '_blank');
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
               >
-                <Mail className="w-4 h-4 text-emerald-600" />
+                <Mail className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span>Email Document</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={handleExportPdf}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
               >
-                <Download className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+                <Download className="w-4 h-4 text-slate-800 dark:text-slate-200" />
                 <span>Download Copy</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => window.print()}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
               >
-                <Printer className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+                <Printer className="w-4 h-4 text-slate-800 dark:text-slate-200" />
                 <span>Print PDF</span>
               </button>
             </div>
@@ -3317,32 +3317,32 @@ export function PdfEditorWorkspace({
                     setStatusMessage('PDF password protection will be applied on export.');
                   }
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
               >
-                <Lock className="w-4 h-4 text-red-600" />
+                <Lock className="w-4 h-4 text-red-600 dark:text-red-400" />
                 <span>Password Protect</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => setActiveTool('watermark')}
-                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium ${
+                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight min-w-[54px] select-none ${
                   activeTool === 'watermark'
-                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white'
-                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
-                <Droplet className="w-4 h-4 text-blue-600" />
+                <Droplet className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span>Watermark</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => setActiveTool('redact')}
-                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium ${
+                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight min-w-[54px] select-none ${
                   activeTool === 'redact'
-                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white'
-                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Square className="w-4 h-4 text-slate-900 fill-slate-900 dark:text-white dark:fill-white" />
@@ -3355,9 +3355,9 @@ export function PdfEditorWorkspace({
                   setStatusMessage('Document sanitized: Metadata cleared and annotations flattened.');
                   handleExportPdf();
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
               >
-                <ShieldAlert className="w-4 h-4 text-amber-600" />
+                <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                 <span>Sanitize & Flatten</span>
               </button>
             </div>
@@ -3374,7 +3374,7 @@ export function PdfEditorWorkspace({
                   setSignatureInitialTab('type');
                   setShowSignaturePad(true);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none"
               >
                 <PenTool className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span>Type Signature</span>
@@ -3390,7 +3390,7 @@ export function PdfEditorWorkspace({
                   setSignatureInitialTab('draw');
                   setShowSignaturePad(true);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none"
               >
                 <Pencil className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span>Draw Signature</span>
@@ -3406,7 +3406,7 @@ export function PdfEditorWorkspace({
                   setSignatureInitialTab('upload');
                   setShowSignaturePad(true);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none"
               >
                 <Upload className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                 <span>Upload Signature</span>
@@ -3436,9 +3436,9 @@ export function PdfEditorWorkspace({
                   setSelectedId(newItem.id);
                   setStatusMessage(`Inserted Date: ${today}`);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none"
               >
-                <Calendar className="w-4 h-4 text-slate-700 dark:text-slate-300" />
+                <Calendar className="w-4 h-4 text-slate-800 dark:text-slate-200" />
                 <span>Add Date</span>
               </button>
               <button
@@ -3446,9 +3446,9 @@ export function PdfEditorWorkspace({
                 onClick={() => {
                   setShowSignChoiceModal(true);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none"
               >
-                <UserCheck className="w-4 h-4 text-[#F45B2A]" />
+                <UserCheck className="w-4 h-4 text-[#B91C1C]" />
                 <span>Sign Workflow</span>
               </button>
             </div>
@@ -3458,18 +3458,18 @@ export function PdfEditorWorkspace({
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => handleRotateCurrentPage(activePage)}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <RotateCw className="w-4 h-4" />
+                <RotateCw className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span>Rotate +90°</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => handleInsertBlankPageAfter(activePage)}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <FilePlus2 className="w-4 h-4" />
+                <FilePlus2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                 <span>Add Blank Page</span>
               </button>
               <button
@@ -3479,26 +3479,26 @@ export function PdfEditorWorkspace({
                   const seqIdx = Math.max(0, pageSequence.indexOf(activePage));
                   handleDuplicatePage(seqIdx, activePage);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <Copy className="w-4 h-4" />
+                <Copy className="w-4 h-4 text-purple-600 dark:text-purple-400" />
                 <span>Duplicate Page</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => handleExtractSinglePage(activePage)}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white select-none disabled:opacity-40"
               >
-                <Scissors className="w-4 h-4" />
+                <Scissors className="w-4 h-4 text-amber-600 dark:text-amber-400" />
                 <span>Extract Page</span>
               </button>
               <button
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => setActiveTool('crop')}
-                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium ${
-                  activeTool === 'crop' ? 'bg-[#1E293B] dark:bg-slate-800 text-white' : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800'
+                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight select-none ${
+                  activeTool === 'crop' ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60' : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Crop className="w-4 h-4" />
@@ -3508,7 +3508,7 @@ export function PdfEditorWorkspace({
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => handleRequestDeletePage(activePage)}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40"
+                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 select-none disabled:opacity-40"
               >
                 <Trash2 className="w-4 h-4" />
                 <span>Delete Page</span>
@@ -3527,10 +3527,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('select');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'select'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <MousePointer className="w-4 h-4" />
@@ -3548,10 +3548,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('existing-text');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'existing-text'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Type className="w-4 h-4" />
@@ -3569,10 +3569,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('text');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'text'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <FilePlus2 className="w-4 h-4" />
@@ -3590,10 +3590,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('redact');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'redact'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Square className="w-4 h-4 fill-current" />
@@ -3611,10 +3611,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('highlight');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'highlight'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Highlighter className="w-4 h-4" />
@@ -3632,10 +3632,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('underline');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'underline'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <UnderlineIcon className="w-4 h-4" />
@@ -3653,10 +3653,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('strikethrough');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'strikethrough'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <StrikethroughIcon className="w-4 h-4" />
@@ -3675,10 +3675,10 @@ export function PdfEditorWorkspace({
                   setActiveTool('stamp');
                   setShowStampModal(true);
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                   activeTool === 'stamp' || showStampModal
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Stamp className="w-4 h-4" />
@@ -3698,10 +3698,10 @@ export function PdfEditorWorkspace({
                   setActiveTool('image');
                   setShowImageUploadModal(true);
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[58px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[58px] select-none ${
                   activeTool === 'image' || showImageUploadModal
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <ImageIcon className="w-4 h-4" />
@@ -3720,13 +3720,13 @@ export function PdfEditorWorkspace({
                     setActiveTool('shape');
                     setShowShapesMenu((prev) => !prev);
                   }}
-                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                     activeTool === 'shape' ||
                     activeTool === 'symbol-check' ||
                     activeTool === 'symbol-cross' ||
                     showShapesMenu
-                      ? 'bg-[#1E293B] text-white shadow-xs'
-                      : 'text-slate-700 hover:bg-slate-100'
+                      ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                      : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                   }`}
                 >
                   <Square className="w-4 h-4" />
@@ -3889,24 +3889,24 @@ export function PdfEditorWorkspace({
                     setActiveTool('drawing');
                     setShowDrawingMenu((prev) => !prev);
                   }}
-                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[54px] ${
+                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[54px] select-none ${
                     activeTool === 'drawing' || showDrawingMenu
-                      ? 'bg-[#1E293B] text-white shadow-xs'
-                      : 'text-slate-700 hover:bg-slate-100'
+                      ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                      : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                   }`}
                 >
                   <Pencil className="w-4 h-4" />
                   <span>Drawing</span>
                 </button>
                 {showDrawingMenu && (
-                  <div className="absolute left-1/2 -translate-x-1/2 mt-1.5 w-40 bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 z-50 text-xs text-slate-700">
+                  <div className="absolute left-1/2 -translate-x-1/2 mt-1.5 w-44 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl py-1.5 z-50 text-xs text-slate-800 dark:text-slate-200">
                     <button
                       type="button"
                       onClick={() => {
                         setActiveTool('drawing');
                         setShowDrawingMenu(false);
                       }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 font-medium"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                       <span>Pencil</span>
@@ -3918,7 +3918,7 @@ export function PdfEditorWorkspace({
                         setActiveTool('shape');
                         setShowDrawingMenu(false);
                       }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 font-medium"
                     >
                       <Minus className="w-3.5 h-3.5" />
                       <span>Line</span>
@@ -3930,7 +3930,7 @@ export function PdfEditorWorkspace({
                         setActiveTool('shape');
                         setShowDrawingMenu(false);
                       }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 font-medium"
                     >
                       <ArrowUpRight className="w-3.5 h-3.5" />
                       <span>Arrow</span>
@@ -3942,7 +3942,7 @@ export function PdfEditorWorkspace({
                         setActiveTool('shape');
                         setShowDrawingMenu(false);
                       }}
-                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 flex items-center gap-2.5 font-medium"
+                      className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2.5 font-medium"
                     >
                       <Square className="w-3.5 h-3.5" />
                       <span>Polygon</span>
@@ -3962,10 +3962,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setActiveTool('eraser');
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[58px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[58px] select-none ${
                   activeTool === 'eraser'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Eraser className="w-4 h-4" />
@@ -3986,10 +3986,10 @@ export function PdfEditorWorkspace({
                     'Spell Checker active: Click any text line on the page to edit with browser spellcheck enabled.'
                   );
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[62px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[62px] select-none ${
                   activeTool === 'spellcheck'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <SpellCheck className="w-4 h-4" />
@@ -4006,10 +4006,10 @@ export function PdfEditorWorkspace({
                   setShowFormsMenu(false);
                   setShowFindBar((prev) => !prev);
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[64px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[64px] select-none ${
                   showFindBar
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Search className="w-4 h-4" />
@@ -4027,10 +4027,10 @@ export function PdfEditorWorkspace({
                   setActiveTool('signature');
                   setShowSignaturePad(true);
                 }}
-                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[48px] ${
+                className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[48px] select-none ${
                   activeTool === 'signature' || showSignaturePad
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <PenTool className="w-4 h-4" />
@@ -4045,10 +4045,10 @@ export function PdfEditorWorkspace({
                   setEditingId(null);
                   setActiveTool('crop');
                 }}
-                className={`hidden xl:flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[48px] ${
+                className={`hidden xl:flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[48px] select-none ${
                   activeTool === 'crop'
-                    ? 'bg-[#1E293B] text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-slate-100'
+                    ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 <Crop className="w-4 h-4" />
@@ -4061,10 +4061,10 @@ export function PdfEditorWorkspace({
                   type="button"
                   data-testid="forms-menu-button"
                   onClick={() => setShowFormsMenu((prev) => !prev)}
-                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-colors min-w-[52px] ${
+                  className={`flex flex-col items-center justify-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight transition-colors min-w-[52px] select-none ${
                     activeTool.startsWith('form-') || activeTool.startsWith('symbol-') || showFormsMenu
-                      ? 'bg-[#1E293B] text-white shadow-xs'
-                      : 'text-slate-700 hover:bg-slate-100'
+                      ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-xs ring-1 ring-slate-700/60'
+                      : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                   }`}
                 >
                   <CheckSquare className="w-4 h-4" />
@@ -4074,7 +4074,7 @@ export function PdfEditorWorkspace({
                 {showFormsMenu && (
                   <div
                     data-testid="forms-dropdown-menu"
-                    className="absolute right-0 mt-1.5 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl py-2 z-50 text-xs text-slate-800"
+                    className="absolute right-0 mt-1.5 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl py-2 z-50 text-xs text-slate-800 dark:text-slate-200"
                   >
                     <div className="px-3 pb-2 border-b border-slate-100">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
@@ -4098,8 +4098,8 @@ export function PdfEditorWorkspace({
                             }}
                             className={`py-1.5 rounded-lg border font-bold text-sm flex items-center justify-center transition-colors ${
                               activeTool === sym.id
-                                ? 'bg-[#1E293B] border-[#1E293B] text-white'
-                                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                                ? 'bg-[#1E293B] dark:bg-slate-800 border-[#1E293B] dark:border-slate-700 text-white'
+                                : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
                             }`}
                           >
                             {sym.label}
@@ -4108,7 +4108,7 @@ export function PdfEditorWorkspace({
                       </div>
                     </div>
 
-                    <div className="py-1.5 border-b border-slate-100">
+                    <div className="py-1.5 border-b border-slate-100 dark:border-slate-800">
                       <span className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
                         Interactive AcroForm Fields
                       </span>
@@ -4128,12 +4128,12 @@ export function PdfEditorWorkspace({
                             setActiveTool(fld.id as EditorToolMode);
                             setShowFormsMenu(false);
                           }}
-                          className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-slate-100 ${
-                            activeTool === fld.id ? 'bg-slate-100 text-slate-900 font-semibold' : 'text-slate-700'
+                          className={`w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-slate-100 dark:hover:bg-slate-800 ${
+                            activeTool === fld.id ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold' : 'text-slate-700 dark:text-slate-200'
                           }`}
                         >
                           <span>{fld.label}</span>
-                          <span className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-500">
+                          <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-mono text-slate-500 dark:text-slate-400">
                             {fld.badge}
                           </span>
                         </button>
@@ -4145,7 +4145,7 @@ export function PdfEditorWorkspace({
                         type="button"
                         disabled={!pdfBytes || isDetectingFields}
                         onClick={handleDetectFormFields}
-                        className="w-full px-3 py-1.5 text-left text-sky-700 hover:bg-slate-100 flex items-center gap-2 disabled:opacity-40"
+                        className="w-full px-3 py-1.5 text-left text-sky-700 dark:text-sky-400 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 disabled:opacity-40"
                       >
                         <Sparkles className="w-3.5 h-3.5 text-sky-500 shrink-0" />
                         <span>{isDetectingFields ? 'Scanning PDF...' : 'Detect Form Fields Automatically'}</span>
@@ -4156,7 +4156,7 @@ export function PdfEditorWorkspace({
                           setFormEditMode((prev) => !prev);
                           setShowFormsMenu(false);
                         }}
-                        className="w-full px-3 py-1.5 text-left text-slate-700 hover:bg-slate-100 flex items-center justify-between"
+                        className="w-full px-3 py-1.5 text-left text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between"
                       >
                         <span className="flex items-center gap-2">
                           <Sliders className="w-3.5 h-3.5 text-slate-400" />
@@ -4455,16 +4455,16 @@ export function PdfEditorWorkspace({
                     setActiveTool('watermark');
                   }
                 }}
-                className={`w-13 py-2 rounded-xl flex flex-col items-center justify-center gap-1 text-[10px] font-semibold transition-all relative ${
+                className={`w-13 py-2 rounded-xl flex flex-col items-center justify-center gap-1 text-[10px] font-semibold antialiased transition-all relative select-none ${
                   isActiveCat
                     ? 'bg-[#1E293B] dark:bg-slate-800 text-white shadow-sm ring-1 ring-slate-700/50'
-                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-white'
+                    : 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
                 {isActiveCat && (
                   <span className="absolute left-0 top-1.5 bottom-1.5 w-1 bg-[#B91C1C] rounded-r-full" />
                 )}
-                <CIcon className={`w-4 h-4 ${isActiveCat ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`} />
+                <CIcon className={`w-4 h-4 ${isActiveCat ? 'text-white' : 'text-slate-700 dark:text-slate-300'}`} />
                 <span className="leading-tight text-center">{cat.label}</span>
               </button>
             );

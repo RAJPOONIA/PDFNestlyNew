@@ -11,7 +11,9 @@ export default function ContactPage() {
   const [error, setError] = useState('');
   const [submittedTicket, setSubmittedTicket] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -24,8 +26,38 @@ export default function ContactPage() {
       return;
     }
 
-    const ticketId = `PDFN-${Math.floor(100000 + Math.random() * 900000)}`;
-    setSubmittedTicket(ticketId);
+    setIsSubmitting(true);
+    try {
+      let clientTimeZone: string | undefined;
+      try {
+        clientTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      } catch {
+        // fallback
+      }
+
+      const res = await fetch('/api/contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: name.trim(),
+          email: email.trim(),
+          topic,
+          message: message.trim(),
+          timeZone: clientTimeZone,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to submit inquiry.');
+      }
+
+      setSubmittedTicket(data.ticketId || `PDFN-${Date.now().toString().slice(-6)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred while sending your message.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -162,10 +194,11 @@ export default function ContactPage() {
 
           <button
             type="submit"
-            className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-[#B91C1C] hover:bg-[#7F1D1D] rounded-lg cursor-pointer transition-colors shadow-xs"
+            disabled={isSubmitting}
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-[#B91C1C] hover:bg-[#7F1D1D] disabled:opacity-60 disabled:cursor-not-allowed rounded-lg cursor-pointer transition-colors shadow-xs"
           >
-            <Send className="w-3.5 h-3.5" />
-            Send Support Message
+            <Send className={`w-3.5 h-3.5 ${isSubmitting ? 'animate-spin' : ''}`} />
+            <span>{isSubmitting ? 'Sending Message...' : 'Send Support Message'}</span>
           </button>
         </form>
       )}
