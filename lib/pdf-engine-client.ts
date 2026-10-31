@@ -166,6 +166,7 @@ export interface EditorAnnotationItem {
     | 'ellipse'
     | 'shape'
     | 'circle'
+    | 'triangle'
     | 'line'
     | 'arrow'
     | 'redact'
@@ -196,7 +197,7 @@ export interface EditorAnnotationItem {
   fontSize?: number;
   opacity?: number;
   imageDataUrl?: string;
-  shapeType?: 'rectangle' | 'rounded-rect' | 'ellipse' | 'line' | 'arrow' | 'freehand';
+  shapeType?: 'rectangle' | 'rounded-rect' | 'ellipse' | 'triangle' | 'line' | 'arrow' | 'freehand';
   fillColorHex?: string;
   strokeColorHex?: string;
   strokeWidth?: number;
@@ -2629,6 +2630,7 @@ export async function applyEditorAnnotationsToPdf(
       item.type === 'ellipse' ||
       item.type === 'shape' ||
       item.type === 'circle' ||
+      item.type === 'triangle' ||
       item.type === 'line' ||
       item.type === 'arrow'
     ) {
@@ -2636,11 +2638,13 @@ export async function applyEditorAnnotationsToPdf(
         item.shapeType ||
         (item.type === 'circle' || item.type === 'ellipse'
           ? 'ellipse'
-          : item.type === 'line'
-            ? 'line'
-            : item.type === 'arrow'
-              ? 'arrow'
-              : 'rectangle');
+          : item.type === 'triangle'
+            ? 'triangle'
+            : item.type === 'line'
+              ? 'line'
+              : item.type === 'arrow'
+                ? 'arrow'
+                : 'rectangle');
       const strokeW = item.strokeWidth ?? 2;
       const strokeCol = item.strokeColorHex ? hexToRgbTuple(item.strokeColorHex) : [r, g, b];
       const strokeRgb = rgb(strokeCol[0], strokeCol[1], strokeCol[2]);
@@ -2662,6 +2666,13 @@ export async function applyEditorAnnotationsToPdf(
           borderWidth: strokeW,
           opacity,
         });
+      } else if (sType === 'triangle') {
+        const pTop = { x: pdfX + boxW / 2, y: pdfY + boxH };
+        const pRight = { x: pdfX + boxW, y: pdfY };
+        const pLeft = { x: pdfX, y: pdfY };
+        page.drawLine({ start: pLeft, end: pRight, thickness: strokeW, color: strokeRgb, opacity });
+        page.drawLine({ start: pRight, end: pTop, thickness: strokeW, color: strokeRgb, opacity });
+        page.drawLine({ start: pTop, end: pLeft, thickness: strokeW, color: strokeRgb, opacity });
       } else if (sType === 'line') {
         page.drawLine({
           start: { x: pdfX, y: pdfY + boxH / 2 },

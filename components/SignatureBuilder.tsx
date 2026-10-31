@@ -31,6 +31,7 @@ interface SignatureBuilderProps {
   onSignatureCreated?: (dataUrl: string) => void;
   onSignatureReady?: (dataUrl: string) => void;
   defaultSignerName?: string;
+  initialTab?: 'type' | 'draw' | 'upload' | 'camera';
 }
 
 interface DrawnPoint {
@@ -203,8 +204,15 @@ export function SignatureBuilder({
   onSignatureCreated,
   onSignatureReady,
   defaultSignerName = 'Alex Morgan',
+  initialTab = 'type',
 }: SignatureBuilderProps) {
-  const [activeTab, setActiveTab] = useState<'type' | 'draw' | 'upload' | 'camera'>('type');
+  const [activeTab, setActiveTab] = useState<'type' | 'draw' | 'upload' | 'camera'>(initialTab);
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [typedName, setTypedName] = useState(defaultSignerName);
   const [selectedFontId, setSelectedFontId] = useState<string>(SIGNATURE_FONT_PRESETS[0].id);
   const [strokeColor, setStrokeColor] = useState('#1d4ed8');
