@@ -21,10 +21,30 @@ import {
 
 export interface SupportReplyItem {
   id: string;
-  senderName: string;
-  senderEmail: string;
+  senderName?: string;
+  senderEmail?: string;
+  from?: string;
+  to?: string;
+  subject?: string;
   message: string;
-  createdAt: string;
+  sentAt?: string;
+  createdAt?: string;
+  sentByAdminEmail?: string;
+}
+
+function formatSafeDateTime(dateStr?: string | null): string {
+  if (!dateStr) return new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) {
+    return new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export interface SupportTicketItem {
@@ -370,12 +390,7 @@ export function AdminSupportTab({
                       </td>
 
                       <td className="py-3.5 px-3 text-[11px] text-[#71717A] whitespace-nowrap">
-                        {new Date(ticket.createdAt).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
+                        {formatSafeDateTime(ticket.createdAt)}
                       </td>
 
                       <td className="py-3.5 px-4 text-right">
@@ -422,7 +437,7 @@ export function AdminSupportTab({
                 </div>
                 <p className="text-xs text-[#71717A]">
                   Topic: <strong>{selectedTicket.topic}</strong> · Submitted{' '}
-                  {new Date(selectedTicket.createdAt).toLocaleString()}
+                  {formatSafeDateTime(selectedTicket.createdAt)}
                 </p>
               </div>
 
@@ -483,10 +498,10 @@ export function AdminSupportTab({
                         <div className="flex items-center justify-between text-[11px]">
                           <div className="flex items-center gap-1.5 font-semibold text-[#B91C1C] dark:text-rose-400">
                             <Shield className="w-3.5 h-3.5" />
-                            <span>{reply.senderName} ({reply.senderEmail})</span>
+                            <span>{reply.senderName || 'PDFNestly Support'} ({reply.senderEmail || reply.from || reply.sentByAdminEmail || 'support@pdfnestly.com'})</span>
                           </div>
                           <span className="text-[#71717A] font-mono text-[10px]">
-                            {new Date(reply.createdAt).toLocaleString()}
+                            {formatSafeDateTime(reply.createdAt || reply.sentAt)}
                           </span>
                         </div>
                         <p className="text-xs text-[#18181B] dark:text-[#FAFAFA] leading-relaxed whitespace-pre-wrap">

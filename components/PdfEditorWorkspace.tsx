@@ -35,6 +35,8 @@ import {
   Layers,
   Lock,
   Unlock,
+  Eye,
+  EyeOff,
   Sliders,
   MoreVertical,
   Maximize2,
@@ -391,6 +393,16 @@ export function PdfEditorWorkspace({
   const [isCreatingShareLink, setIsCreatingShareLink] = useState<boolean>(false);
   const [createdShareUrl, setCreatedShareUrl] = useState<string>('');
   const [signingFormFieldId, setSigningFormFieldId] = useState<string | null>(null);
+
+  // Document Password Protection & Encryption state
+  const [showPasswordModal, setShowPasswordModal] = useState<boolean>(false);
+  const [docPassword, setDocPassword] = useState<string>('');
+  const [docConfirmPassword, setDocConfirmPassword] = useState<string>('');
+  const [docAllowPrint, setDocAllowPrint] = useState<boolean>(true);
+  const [docAllowCopy, setDocAllowCopy] = useState<boolean>(true);
+  const [isPasswordProtected, setIsPasswordProtected] = useState<boolean>(false);
+  const [passwordError, setPasswordError] = useState<string>('');
+  const [showPasswordChars, setShowPasswordChars] = useState<boolean>(false);
 
   // Status & loading
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -2726,7 +2738,36 @@ export function PdfEditorWorkspace({
         pageCrops,
         pageSequence: pageSequence.length > 0 ? pageSequence : undefined,
       });
-      const blob = toPdfBlob(outBytes);
+
+      let finalOutBytes = outBytes;
+      if (isPasswordProtected && docPassword.trim()) {
+        setStatusMessage('Encrypting document with 128-bit password protection...');
+        try {
+          const encFormData = new FormData();
+          encFormData.append('file', toPdfBlob(outBytes), fileName);
+          encFormData.append('operation', 'protect');
+          encFormData.append('userPassword', docPassword.trim());
+          encFormData.append('allowPrint', String(docAllowPrint));
+          encFormData.append('allowCopy', String(docAllowCopy));
+
+          const encRes = await fetch('/api/pdf/process', {
+            method: 'POST',
+            body: encFormData,
+          });
+
+          if (!encRes.ok) {
+            const errData = await encRes.json().catch(() => ({}));
+            throw new Error(errData.error || 'Server failed to encrypt PDF.');
+          }
+
+          const encBuffer = await encRes.arrayBuffer();
+          finalOutBytes = new Uint8Array(encBuffer);
+        } catch (encErr) {
+          throw new Error('Document encryption failed: ' + (encErr as Error).message);
+        }
+      }
+
+      const blob = toPdfBlob(finalOutBytes);
       const url = URL.createObjectURL(blob);
       const baseName = fileName.replace(/\.pdf$/i, '');
       const finalName = `${baseName}-edited.pdf`;
@@ -2734,11 +2775,15 @@ export function PdfEditorWorkspace({
       setExportedResult({
         url,
         fileName: finalName,
-        byteLength: outBytes.byteLength,
+        byteLength: finalOutBytes.byteLength,
       });
       setExportedIdx(historyIdx);
       setSavedIdx(historyIdx);
-      setStatusMessage(`Exported "${finalName}" (${formatFileSize(outBytes.byteLength)}) successfully.`);
+      setStatusMessage(
+        isPasswordProtected
+          ? `🔒 Exported password-protected "${finalName}" (${formatFileSize(finalOutBytes.byteLength)}). Password required to open.`
+          : `Exported "${finalName}" (${formatFileSize(finalOutBytes.byteLength)}) successfully.`
+      );
 
       const durationMs = Math.max(1, Date.now() - startMs);
       await trackPdfActivity({
@@ -2747,7 +2792,7 @@ export function PdfEditorWorkspace({
         toolName: editorTitle,
         jobId,
         fileSizeBytes: pdfBytes.byteLength,
-        outputSizeBytes: outBytes.byteLength,
+        outputSizeBytes: finalOutBytes.byteLength,
         durationMs,
         status: 'succeeded',
       });
@@ -3312,15 +3357,18 @@ export function PdfEditorWorkspace({
                 type="button"
                 disabled={!pdfBytes}
                 onClick={() => {
-                  const pwd = window.prompt('Set password to encrypt and protect this PDF:');
-                  if (pwd) {
-                    setStatusMessage('PDF password protection will be applied on export.');
-                  }
+                  setDocConfirmPassword(docPassword);
+                  setPasswordError('');
+                  setShowPasswordModal(true);
                 }}
-                className="flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white disabled:opacity-40 select-none"
+                className={`flex flex-col items-center justify-center gap-1 px-3 py-1.5 rounded-md text-[11px] font-semibold antialiased tracking-tight disabled:opacity-40 select-none cursor-pointer transition-colors ${
+                  isPasswordProtected
+                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 ring-1 ring-emerald-500/50'
+                    : 'text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-950 dark:hover:text-white'
+                }`}
               >
-                <Lock className="w-4 h-4 text-red-600 dark:text-red-400" />
-                <span>Password Protect</span>
+                <Lock className={`w-4 h-4 ${isPasswordProtected ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`} />
+                <span>{isPasswordProtected ? '🔒 Protected' : 'Password Protect'}</span>
               </button>
               <button
                 type="button"
@@ -7686,6 +7734,176 @@ export function PdfEditorWorkspace({
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Real PDF Password Protection & Encryption Modal */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-5 border-b border-[#E4E4E7] dark:border-[#3F3F46] flex items-center justify-between bg-slate-50 dark:bg-[#27272A]/50">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-red-100 dark:bg-red-950/40 text-[#B91C1C] dark:text-red-400 flex items-center justify-center">
+                  <Lock className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    Password Protect & Encrypt PDF
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Standard ISO 128-bit Document Encryption
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setPasswordError('');
+                }}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 text-xs">
+              {isPasswordProtected && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400 font-semibold">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Password protection is ACTIVE</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPasswordProtected(false);
+                      setDocPassword('');
+                      setDocConfirmPassword('');
+                      setStatusMessage('Password protection removed.');
+                      setShowPasswordModal(false);
+                    }}
+                    className="text-[11px] text-rose-600 hover:underline font-semibold cursor-pointer"
+                  >
+                    Remove Password
+                  </button>
+                </div>
+              )}
+
+              {passwordError && (
+                <div className="p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900 rounded-xl flex items-center gap-2 text-rose-600 dark:text-rose-400 text-xs">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{passwordError}</span>
+                </div>
+              )}
+
+              <p className="text-slate-600 dark:text-slate-300 text-[11px] leading-relaxed">
+                Set a document password. When you export or save this PDF, the output file will be genuinely encrypted and will prompt for this password whenever opened in Adobe Acrobat, Google Chrome, Microsoft Edge, or Apple Preview.
+              </p>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                    Document Open Password *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showPasswordChars ? 'text' : 'password'}
+                      value={docPassword}
+                      onChange={(e) => {
+                        setDocPassword(e.target.value);
+                        setPasswordError('');
+                      }}
+                      placeholder="Enter a secure password..."
+                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#B91C1C]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPasswordChars(!showPasswordChars)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-200 mb-1">
+                    Confirm Password *
+                  </label>
+                  <input
+                    type={showPasswordChars ? 'text' : 'password'}
+                    value={docConfirmPassword}
+                    onChange={(e) => {
+                      setDocConfirmPassword(e.target.value);
+                      setPasswordError('');
+                    }}
+                    placeholder="Re-enter password to confirm..."
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#B91C1C]"
+                  />
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                  <span className="text-[11px] font-bold uppercase text-slate-500 block">Permissions:</span>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={docAllowPrint}
+                      onChange={(e) => setDocAllowPrint(e.target.checked)}
+                      className="rounded accent-[#B91C1C]"
+                    />
+                    <span className="text-slate-700 dark:text-slate-200 text-[11px]">Allow printing document</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={docAllowCopy}
+                      onChange={(e) => setDocAllowCopy(e.target.checked)}
+                      className="rounded accent-[#B91C1C]"
+                    />
+                    <span className="text-slate-700 dark:text-slate-200 text-[11px]">Allow copying text and images</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowPasswordModal(false);
+                    setPasswordError('');
+                  }}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!docPassword.trim()) {
+                      setPasswordError('Please enter a password.');
+                      return;
+                    }
+                    if (docPassword.length < 3) {
+                      setPasswordError('Password must be at least 3 characters.');
+                      return;
+                    }
+                    if (docPassword !== docConfirmPassword) {
+                      setPasswordError('Passwords do not match. Please re-enter.');
+                      return;
+                    }
+                    setIsPasswordProtected(true);
+                    setShowPasswordModal(false);
+                    setPasswordError('');
+                    setStatusMessage('🔒 PDF Password Protection enabled! It will be encrypted on export.');
+                  }}
+                  className="px-4 py-2 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] text-white font-semibold shadow-xs cursor-pointer"
+                >
+                  Apply Password Protection
+                </button>
+              </div>
             </div>
           </div>
         </div>

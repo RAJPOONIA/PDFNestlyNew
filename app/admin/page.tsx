@@ -658,8 +658,20 @@ export default function AdminPlatformPage() {
     }
   };
 
+  // Loading authentication state
+  if (authLoading) {
+    return (
+      <div className="min-h-[70vh] flex items-center justify-center px-6 py-12 bg-[#FAFAFA] dark:bg-[#09090B]">
+        <div className="flex items-center gap-3 text-xs font-semibold text-[#52525B] dark:text-[#D4D4D8]">
+          <RefreshCw className="w-5 h-5 animate-spin text-[#B91C1C]" />
+          <span>Verifying administrator authentication...</span>
+        </div>
+      </div>
+    );
+  }
+
   // Unauthenticated state
-  if (!authLoading && !user) {
+  if (!user) {
     return (
       <div className="min-h-[70vh] flex items-center justify-center px-6 py-12 bg-[#FAFAFA] dark:bg-[#09090B]">
         <div className="max-w-md w-full bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-2xl p-8 text-center space-y-4 shadow-sm">

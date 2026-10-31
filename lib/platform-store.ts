@@ -108,6 +108,9 @@ export interface SupportTicketReply {
   subject: string;
   message: string;
   sentAt: string;
+  createdAt?: string;
+  senderName?: string;
+  senderEmail?: string;
   sentByAdminEmail: string;
 }
 
@@ -511,6 +514,9 @@ function createInitialDatabaseState(): PlatformDatabaseShape {
             subject: 'Re: [PDFN-319582] Feature Request — PDFNestly Support',
             message: 'Hi Elena, thank you for your feedback! Custom corporate stamp creation is currently on our active engineering roadmap.',
             sentAt: new Date(Date.now() - 1 * 3600 * 1000).toISOString(),
+            createdAt: new Date(Date.now() - 1 * 3600 * 1000).toISOString(),
+            senderName: 'PDFNestly Support',
+            senderEmail: 'support@pdfnestly.com',
             sentByAdminEmail: bootstrapAdminEmail,
           },
         ],
@@ -2586,6 +2592,9 @@ export function addSupportTicketReply(
     subject: `Re: [${ticket.id}] ${ticket.topic} — PDFNestly Support`,
     message: reply.message.trim(),
     sentAt: nowIso,
+    createdAt: nowIso,
+    senderName: 'PDFNestly Support',
+    senderEmail: 'support@pdfnestly.com',
     sentByAdminEmail: reply.adminEmail,
   };
 
