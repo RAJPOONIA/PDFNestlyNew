@@ -12,4 +12,14 @@ export function isSuperAdmin(role?: string | null, email?: string | null): boole
   return role === 'super_admin' || role === 'admin';
 }
 
-export type AnalyticsTimeRange = 'today' | '7d' | '28d' | '90d' | 'lifetime' | 'custom';
+export type AnalyticsTimeRange =
+  | 'today'
+  | 'yesterday'
+  | '7d'
+  | '28d'
+  | '30d'
+  | '90d'
+  | 'this_month'
+  | 'last_month'
+  | 'lifetime'
+  | 'custom';

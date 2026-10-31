@@ -38,17 +38,42 @@ import {
   AdminDemographicsTab,
   DetailedAnalyticsData,
 } from '@/components/admin/AdminDemographicsTab';
+import {
+  EnterpriseBundleData,
+  KpiComparisonCard,
+  AdminRealtimeSection,
+  AdminTrafficAndAcquisitionSection,
+  AdminDevicesSection,
+  AdminPdfToolsAnalyticsSection,
+  AdminFunnelSection,
+  AdminErrorMonitoringSection,
+  AdminRevenueAndGscSection,
+  AdminSystemHealthSection,
+  AdminReportsAndExportsSection,
+} from '@/components/admin/AdminEnterpriseSections';
 import { AnalyticsTimeRange, isAdminRole, isSuperAdmin } from '@/lib/roles';
 
 type AdminTab =
   | 'overview'
+  | 'realtime'
+  | 'traffic'
+  | 'acquisition'
   | 'demographics'
-  | 'support'
+  | 'devices'
+  | 'pdf_tools'
   | 'users'
   | 'activity'
-  | 'jobs'
+  | 'user_journey'
+  | 'errors'
+  | 'revenue'
+  | 'gsc'
+  | 'health'
+  | 'support'
+  | 'audit'
+  | 'roles'
   | 'settings'
-  | 'audit';
+  | 'reports'
+  | 'jobs';
 
 interface AdminOverviewData {
   users: {
@@ -278,6 +303,7 @@ export default function AdminPlatformPage() {
   } | null>(null);
   const [isCheckingSmtp, setIsCheckingSmtp] = useState(false);
   const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
+  const [enterpriseBundle, setEnterpriseBundle] = useState<EnterpriseBundleData | null>(null);
 
   const fetchOverviewAndSettings = useCallback(async () => {
     setIsLoading(true);
@@ -303,6 +329,7 @@ export default function AdminPlatformPage() {
       const data = await res.json();
       if (res.ok) {
         setAccessDenied(false);
+        if (data.kpiComparisons) setEnterpriseBundle(data as EnterpriseBundleData);
         if (data.overview) setOverview(data.overview);
         if (data.analytics) setDetailedAnalytics(data.analytics);
         if (data.settings) {
@@ -757,14 +784,23 @@ export default function AdminPlatformPage() {
           <div className="flex flex-wrap items-center gap-2.5">
             <select
               aria-label="Analytics time range"
-              value={rangeDays}
-              onChange={(e) => setRangeDays(Number(e.target.value))}
+              value={analyticsRange}
+              onChange={(e) => {
+                const val = e.target.value as AnalyticsTimeRange;
+                setAnalyticsRange(val);
+              }}
               className="px-3 py-2 text-xs font-semibold rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-[#FAFAFA] dark:bg-[#27272A] text-[#18181B] dark:text-[#FAFAFA]"
             >
-              <option value={1}>Today (24h)</option>
-              <option value={7}>Last 7 Days</option>
-              <option value={30}>Last 30 Days</option>
-              <option value={365}>Last 12 Months</option>
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="28d">Last 28 Days</option>
+              <option value="30d">Last 30 Days</option>
+              <option value="90d">Last 90 Days</option>
+              <option value="this_month">This Month</option>
+              <option value="last_month">Last Month</option>
+              <option value="lifetime">Lifetime / All Time</option>
+              <option value="custom">Custom Date Range</option>
             </select>
 
             <button
@@ -773,6 +809,7 @@ export default function AdminPlatformPage() {
                 fetchOverviewAndSettings();
                 fetchUsers();
                 fetchEventsAndJobs();
+                fetchSupportTickets();
               }}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] bg-[#FAFAFA] dark:bg-[#27272A] hover:border-[#B91C1C] text-xs font-semibold cursor-pointer"
             >
@@ -819,45 +856,36 @@ export default function AdminPlatformPage() {
           </div>
         )}
 
-        {/* Section Navigation Bar */}
+        {/* 19-Section Enterprise Navigation Matrix */}
         <div
           role="tablist"
           aria-label="Admin sections"
-          className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-2xl p-1.5 flex flex-wrap items-center gap-1.5 shadow-2xs"
+          className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-2xl p-2 flex flex-wrap items-center gap-1.5 shadow-2xs"
         >
           {[
-            { id: 'overview', label: 'Overview & Analytics', icon: BarChart3 },
-            { id: 'demographics', label: 'Audience Demographics', icon: Globe },
+            { id: 'overview', label: '1. Overview', icon: BarChart3 },
+            { id: 'realtime', label: '2. Real-Time', icon: Activity },
+            { id: 'traffic', label: '3. Traffic Analytics', icon: BarChart3 },
+            { id: 'acquisition', label: '4. Acquisition', icon: Globe },
+            { id: 'demographics', label: '5. Geography', icon: Globe },
+            { id: 'devices', label: '6. Devices', icon: Server },
+            { id: 'pdf_tools', label: '7. PDF Tools (30)', icon: FileText },
+            { id: 'users', label: `8. User Management (${overview?.users.total ?? usersTotal})`, icon: Users },
+            { id: 'activity', label: '9. User Analytics', icon: Activity },
+            { id: 'user_journey', label: '10. User Journey', icon: BarChart3 },
+            { id: 'errors', label: '11. Error Monitoring', icon: AlertCircle },
+            { id: 'revenue', label: '12. Revenue', icon: BarChart3 },
+            { id: 'gsc', label: '13. Search Console', icon: Search },
+            { id: 'health', label: '14. System Health', icon: Server },
             {
               id: 'support',
-              label: `Support & Inquiries (${supportStats.open > 0 ? `${supportStats.open} Open` : supportStats.total})`,
+              label: `15. Support Inbox (${supportStats.open > 0 ? `${supportStats.open} Open` : supportStats.total})`,
               icon: MessageSquare,
             },
-            {
-              id: 'users',
-              label: `User Management (${overview?.users.total ?? usersTotal})`,
-              icon: Users,
-            },
-            {
-              id: 'activity',
-              label: `User Activity (${activityEvents.length})`,
-              icon: Activity,
-            },
-            {
-              id: 'jobs',
-              label: `PDF Jobs History (${pdfJobs.length})`,
-              icon: FileText,
-            },
-            {
-              id: 'audit',
-              label: `Audit Logs (${auditLogs.length})`,
-              icon: ClipboardList,
-            },
-            {
-              id: 'settings',
-              label: 'Admin Settings & Health',
-              icon: Settings,
-            },
+            { id: 'audit', label: `16. Security Logs (${auditLogs.length})`, icon: ClipboardList },
+            { id: 'roles', label: '17. Admin Roles', icon: Shield },
+            { id: 'settings', label: '18. System Settings', icon: Settings },
+            { id: 'reports', label: '19. Reports & CSV', icon: FileText },
           ].map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
@@ -868,7 +896,7 @@ export default function AdminPlatformPage() {
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveTab(tab.id as AdminTab)}
-                className={`px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer ${
+                className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
                   active
                     ? 'bg-[#B91C1C] text-white shadow-xs'
                     : 'text-[#52525B] dark:text-[#D4D4D8] hover:bg-[#F4F4F5] dark:hover:bg-[#27272A]'
@@ -1076,10 +1104,41 @@ export default function AdminPlatformPage() {
                 )}
               </div>
             </div>
+            {/* Previous-Period KPI Comparison Matrix */}
+            {enterpriseBundle && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-bold text-[#18181B] dark:text-[#FAFAFA]">
+                    Period-over-Period KPI Comparison ({enterpriseBundle.rangeLabel})
+                  </h2>
+                  <span className="text-[11px] font-mono text-[#71717A]">
+                    Timezone: {enterpriseBundle.reportingTimezone}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {Object.values(enterpriseBundle.kpiComparisons).map((metric) => (
+                    <KpiComparisonCard key={metric.label} metric={metric} />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* AUDIENCE DEMOGRAPHICS TAB */}
+        {/* TAB 2: REAL-TIME ANALYTICS */}
+        {activeTab === 'realtime' && enterpriseBundle && (
+          <AdminRealtimeSection data={enterpriseBundle} />
+        )}
+
+        {/* TAB 3 & 4: TRAFFIC & ACQUISITION ANALYTICS */}
+        {(activeTab === 'traffic' || activeTab === 'acquisition') && enterpriseBundle && (
+          <AdminTrafficAndAcquisitionSection
+            data={enterpriseBundle}
+            mode={activeTab === 'traffic' ? 'traffic' : 'acquisition'}
+          />
+        )}
+
+        {/* TAB 5: AUDIENCE DEMOGRAPHICS & GEOGRAPHY */}
         {activeTab === 'demographics' && (
           <AdminDemographicsTab
             analytics={detailedAnalytics}
@@ -1102,7 +1161,128 @@ export default function AdminPlatformPage() {
           />
         )}
 
-        {/* SUPPORT & FEEDBACK TICKETS TAB */}
+        {/* TAB 6: DEVICES & TECHNOLOGY */}
+        {activeTab === 'devices' && enterpriseBundle && (
+          <AdminDevicesSection data={enterpriseBundle} />
+        )}
+
+        {/* TAB 7: PDF TOOLS ANALYTICS (ALL 30 TOOLS) */}
+        {activeTab === 'pdf_tools' && enterpriseBundle && (
+          <AdminPdfToolsAnalyticsSection data={enterpriseBundle} />
+        )}
+
+        {/* TAB 10: USER JOURNEY & CONVERSION FUNNELS */}
+        {activeTab === 'user_journey' && enterpriseBundle && (
+          <AdminFunnelSection data={enterpriseBundle} />
+        )}
+
+        {/* TAB 11: ERROR MONITORING */}
+        {activeTab === 'errors' && enterpriseBundle && (
+          <AdminErrorMonitoringSection
+            data={enterpriseBundle}
+            onUpdateStatus={async (signature, status) => {
+              try {
+                const res = await fetch('/api/admin/overview', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    action: 'update_error_status',
+                    signature,
+                    status,
+                  }),
+                });
+                const json = await res.json();
+                if (res.ok) {
+                  setStatusBanner({
+                    type: 'success',
+                    text: json.message || `Updated ${signature} to ${status}`,
+                  });
+                  fetchOverviewAndSettings();
+                } else {
+                  setStatusBanner({
+                    type: 'error',
+                    text: json.error || 'Failed to update status',
+                  });
+                }
+              } catch {
+                setStatusBanner({ type: 'error', text: 'Network error updating incident.' });
+              }
+            }}
+          />
+        )}
+
+        {/* TAB 12 & 13: REVENUE ANALYTICS & GOOGLE SEARCH CONSOLE */}
+        {(activeTab === 'revenue' || activeTab === 'gsc') && enterpriseBundle && (
+          <AdminRevenueAndGscSection
+            data={enterpriseBundle}
+            mode={activeTab === 'revenue' ? 'revenue' : 'gsc'}
+          />
+        )}
+
+        {/* TAB 14: SYSTEM HEALTH & DEPENDENCIES */}
+        {activeTab === 'health' && enterpriseBundle && (
+          <AdminSystemHealthSection data={enterpriseBundle} />
+        )}
+
+        {/* TAB 17: ADMIN ROLES & PERMISSIONS MATRIX */}
+        {activeTab === 'roles' && (
+          <div className="bg-white dark:bg-[#18181B] border border-[#E4E4E7] dark:border-[#3F3F46] rounded-2xl p-6 space-y-4">
+            <h3 className="text-base font-bold text-[#18181B] dark:text-[#FAFAFA]">
+              Role-Based Access Control (RBAC) Matrix & Security Policies
+            </h3>
+            <p className="text-xs text-[#71717A]">
+              Enforced server-side via <code className="font-mono">requireAdminUser(req, allowedRoles)</code> in <code className="font-mono">/lib/server-auth.ts</code>. Administrators never receive automatic access to private user PDF files.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
+              {[
+                {
+                  role: 'super_admin',
+                  title: 'Super Admin',
+                  desc: 'Full platform governance, role assignments, system settings, SMTP config, and security audit review.',
+                },
+                {
+                  role: 'admin',
+                  title: 'Administrator',
+                  desc: 'User management, analytics dashboards, error incident triage, support inbox, and operational monitoring.',
+                },
+                {
+                  role: 'support',
+                  title: 'Support Specialist',
+                  desc: 'Access to Support Inbox, official replies from support@pdfnestly.com, and user diagnostic assistance.',
+                },
+                {
+                  role: 'analyst',
+                  title: 'Data Analyst',
+                  desc: 'Read-only access to GA4 & 1P traffic analytics, tool performance, funnels, and CSV report exports.',
+                },
+              ].map((r) => (
+                <div
+                  key={r.role}
+                  className="p-4 rounded-xl border border-[#E4E4E7] dark:border-[#3F3F46] space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-sm text-[#18181B] dark:text-[#FAFAFA]">
+                      {r.title}
+                    </span>
+                    <code className="px-2 py-0.5 rounded bg-[#FEF2F2] dark:bg-[#B91C1C]/20 text-[#B91C1C] font-mono text-[10px]">
+                      {r.role}
+                    </code>
+                  </div>
+                  <p className="text-[#52525B] dark:text-[#A1A1AA] leading-relaxed">
+                    {r.desc}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 19: DOWNLOADABLE REPORTS & CSV EXPORTS */}
+        {activeTab === 'reports' && enterpriseBundle && (
+          <AdminReportsAndExportsSection data={enterpriseBundle} />
+        )}
+
+        {/* TAB 15: SUPPORT & FEEDBACK TICKETS TAB */}
         {activeTab === 'support' && (
           <AdminSupportTab
             tickets={supportTickets}

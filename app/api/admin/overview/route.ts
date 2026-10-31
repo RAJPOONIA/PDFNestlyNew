@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  getAdminOverviewMetrics,
-  getAdminAnalyticsDetailed,
-  getSystemSettings,
-  AnalyticsTimeRange,
-} from '@/lib/platform-store';
 import { requireAdminUser } from '@/lib/server-auth';
+import {
+  getEnterpriseAnalyticsBundle,
+  setErrorIncidentStatus,
+} from '@/lib/admin-analytics-engine';
 
 export async function GET(req: NextRequest) {
   const adminCheck = await requireAdminUser(req);
@@ -15,48 +13,35 @@ export async function GET(req: NextRequest) {
     const url = new URL(req.url);
     const rangeParam = url.searchParams.get('range') || undefined;
     const rangeDaysParam = url.searchParams.get('rangeDays');
-    const startDateParam = url.searchParams.get('startDate') || undefined;
-    const endDateParam = url.searchParams.get('endDate') || undefined;
+    const startDate = url.searchParams.get('startDate') || undefined;
+    const endDate = url.searchParams.get('endDate') || undefined;
+    const countryFilter = url.searchParams.get('country') || undefined;
+    const toolFilter = url.searchParams.get('tool') || undefined;
+    const statusFilter = url.searchParams.get('status') || undefined;
 
-    // Map rangeDays to range if range not explicitly specified
-    let range: AnalyticsTimeRange = '28d';
-    if (rangeParam && ['today', '7d', '28d', '90d', 'lifetime', 'custom'].includes(rangeParam)) {
-      range = rangeParam as AnalyticsTimeRange;
-    } else if (rangeDaysParam) {
+    let range = rangeParam || '28d';
+    if (!rangeParam && rangeDaysParam) {
       const days = Number(rangeDaysParam);
       if (days === 1) range = 'today';
       else if (days === 7) range = '7d';
-      else if (days === 28 || days === 30) range = '28d';
+      else if (days === 28) range = '28d';
+      else if (days === 30) range = '30d';
       else if (days === 90) range = '90d';
       else if (days >= 365) range = 'lifetime';
     }
 
-    const detailed = getAdminAnalyticsDetailed({
+    const bundle = await getEnterpriseAnalyticsBundle({
       range,
-      startDate: startDateParam,
-      endDate: endDateParam,
+      startDate,
+      endDate,
+      countryFilter,
+      toolFilter,
+      statusFilter,
     });
-
-    const overview = getAdminOverviewMetrics(
-      range === 'today'
-        ? 1
-        : range === '7d'
-        ? 7
-        : range === '28d'
-        ? 28
-        : range === '90d'
-        ? 90
-        : 365
-    );
-
-    const settings = getSystemSettings();
 
     return NextResponse.json({
       admin: adminCheck.admin,
-      range,
-      analytics: detailed,
-      overview,
-      settings,
+      ...bundle,
     });
   } catch (err) {
     return NextResponse.json(
@@ -66,6 +51,35 @@ export async function GET(req: NextRequest) {
             ? err.message
             : 'Unable to fetch admin overview & analytics data.',
       },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const adminCheck = await requireAdminUser(req);
+  if (!adminCheck.ok) return adminCheck.response;
+
+  try {
+    const body = await req.json();
+    const { action, signature, status } = body || {};
+
+    if (action === 'update_error_status' && signature && status) {
+      if (['Open', 'Investigating', 'Resolved'].includes(status)) {
+        setErrorIncidentStatus(String(signature), status);
+        return NextResponse.json({
+          ok: true,
+          signature,
+          status,
+          message: `Incident ${signature} updated to ${status}.`,
+        });
+      }
+    }
+
+    return NextResponse.json({ error: 'Invalid action or parameters.' }, { status: 400 });
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Operation failed.' },
       { status: 500 }
     );
   }

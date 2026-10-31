@@ -2695,7 +2695,7 @@ export interface AdminAnalyticsDetailedResult {
 }
 
 export function getAdminAnalyticsDetailed(options: {
-  range?: 'today' | '7d' | '28d' | '90d' | 'lifetime' | 'custom';
+  range?: AnalyticsTimeRange;
   startDate?: string;
   endDate?: string;
 }): AdminAnalyticsDetailedResult {
