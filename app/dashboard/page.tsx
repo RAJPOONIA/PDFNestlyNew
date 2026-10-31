@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useAuth, ClientUserProfile } from '@/components/AuthProvider';
 import { formatFileSize } from '@/lib/pdf-utils';
+import { isAdminRole } from '@/lib/roles';
 
 interface DashboardJob {
   id: string;
@@ -243,7 +244,7 @@ export default function UserDashboardPage() {
     <div className="bg-[#FAFAFA] dark:bg-[#09090B] min-h-[calc(100vh-4rem)] py-8 px-6">
       <div className="max-w-7xl mx-auto space-y-6">
         {/* Administrator Guidance Banner (Distinct Separation of Admin vs User Panel) */}
-        {profile.role === 'admin' && (
+        {isAdminRole(profile.role) && (
           <div className="bg-gradient-to-r from-red-900/15 via-[#B91C1C]/10 to-transparent border border-[#B91C1C]/35 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <span className="p-2.5 rounded-xl bg-[#B91C1C] text-white shadow-xs shrink-0">
@@ -262,7 +263,7 @@ export default function UserDashboardPage() {
               </div>
             </div>
             <Link
-              href="/admin"
+              href="/admin/dashboard"
               className="px-4 py-2 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] text-white text-xs font-bold transition-colors shadow-xs shrink-0 inline-flex items-center gap-1.5"
             >
               <Shield className="w-3.5 h-3.5" />
@@ -297,10 +298,10 @@ export default function UserDashboardPage() {
                     ? 'Google OAuth'
                     : 'Email & Password'}
                 </span>
-                {profile.role === 'admin' && (
+                {isAdminRole(profile.role) && (
                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-bold rounded-md bg-[#FEF2F2] dark:bg-[#B91C1C]/20 text-[#B91C1C] dark:text-[#EF4444] border border-[#FECACA] dark:border-[#B91C1C]/40">
                     <Shield className="w-3 h-3" />
-                    Administrator
+                    Administrator ({profile.role})
                   </span>
                 )}
                 {profile.emailVerified ? (
@@ -356,9 +357,9 @@ export default function UserDashboardPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            {profile.role === 'admin' && (
+            {isAdminRole(profile.role) && (
               <Link
-                href="/admin"
+                href="/admin/dashboard"
                 className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#B91C1C] hover:bg-[#7F1D1D] text-white text-xs font-semibold transition-colors shadow-xs"
               >
                 <Shield className="w-4 h-4" />

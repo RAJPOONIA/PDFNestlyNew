@@ -1,6 +1,26 @@
 {
   "users": [
     {
+      "uid": "usr_ca34bde3bf5442e7a37b",
+      "email": "normal_tester_1793444977701@example.com",
+      "displayName": "Normal User",
+      "photoURL": "",
+      "provider": "email",
+      "role": "user",
+      "status": "active",
+      "emailVerified": false,
+      "passwordHash": "c8b1de78a48e98c2818343f6da2385f9:8c10ca2662454967171fce0eb6215601e377432086188bc798da1491ce3ff5038fa15fd5358faee43d9dcb53a70c4e3f6721d0ff502c123f9e8ee2fedcc8d6ff",
+      "verificationToken": "sha256-verify:0f2d62c9f0af48c2a147dc9362df2a3715471b31c7dd4669a072201b74e62777",
+      "verificationTokenExpiresAt": "2026-11-01T11:09:39.067Z",
+      "resetToken": null,
+      "resetTokenExpiresAt": null,
+      "pdfJobsCount": 0,
+      "createdAt": "2026-10-31T11:09:39.066Z",
+      "updatedAt": "2026-10-31T11:09:39.066Z",
+      "lastLoginAt": "2026-10-31T11:09:39.066Z",
+      "lastActiveAt": "2026-10-31T11:09:39.148Z"
+    },
+    {
       "uid": "usr_admin_bootstrap",
       "email": "rfjatt002@gmail.com",
       "displayName": "Raj Kumar Poonia",
@@ -19,6 +39,18 @@
     }
   ],
   "sessions": [
+    {
+      "id": "sess_057555dcc6814fd6b0ce",
+      "userId": "usr_ca34bde3bf5442e7a37b",
+      "userEmail": "normal_tester_1793444977701@example.com",
+      "provider": "email",
+      "userAgent": "Browser",
+      "ipHash": "09f947cff6c7f0a5",
+      "createdAt": "2026-10-31T11:09:39.147Z",
+      "lastSeenAt": "2026-10-31T11:09:39.147Z",
+      "expiresAt": "2026-11-07T11:09:39.147Z",
+      "revokedAt": null
+    },
     {
       "id": "sess_0a191fef08f44bff92ff",
       "userId": "usr_admin_bootstrap",
@@ -69,6 +101,26 @@
     }
   ],
   "activityEvents": [
+    {
+      "id": "evt_7054a83ab1084cfd9f9c",
+      "dedupeKey": "signup_usr_ca34bde3bf5442e7a37b",
+      "userId": "usr_ca34bde3bf5442e7a37b",
+      "userEmail": "normal_tester_1793444977701@example.com",
+      "anonymousSessionId": null,
+      "eventType": "signup_completed",
+      "toolSlug": null,
+      "toolName": null,
+      "pagePath": null,
+      "status": "succeeded",
+      "durationMs": null,
+      "fileSizeBytes": null,
+      "outputSizeBytes": null,
+      "errorCategory": null,
+      "jobId": null,
+      "country": "United States",
+      "countryCode": "US",
+      "createdAt": "2026-10-31T11:09:39.148Z"
+    },
     {
       "id": "evt_2084227922b34d6083af",
       "dedupeKey": null,

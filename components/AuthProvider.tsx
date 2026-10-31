@@ -22,13 +22,15 @@ import {
 } from '@/lib/firebase';
 import { trackPdfActivity } from '@/lib/activity-client';
 
+import { UserRole } from '@/lib/roles';
+
 export interface ClientUserProfile {
   uid: string;
   email: string;
   displayName: string;
   photoURL: string;
   provider: 'google' | 'email';
-  role: 'user' | 'admin';
+  role: UserRole;
   status: 'active' | 'suspended';
   emailVerified: boolean;
   pdfJobsCount: number;

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   SafeUserProfile,
+  UserRole,
+  isAdminRole,
   getSessionCookieName,
   validateSessionToken,
   syncFirebaseAuthenticatedUser,
@@ -206,7 +208,8 @@ export async function requireAuthenticatedUser(
 }
 
 export async function requireAdminUser(
-  req: NextRequest
+  req: NextRequest,
+  allowedRoles?: UserRole[]
 ): Promise<
   | { ok: true; admin: SafeUserProfile }
   | { ok: false; response: NextResponse }
@@ -216,7 +219,10 @@ export async function requireAdminUser(
     return authCheck;
   }
 
-  if (authCheck.user.role !== 'admin') {
+  const role = authCheck.user.role;
+  const isAuthorized = isAdminRole(role) && (!allowedRoles || allowedRoles.includes(role));
+
+  if (!isAuthorized) {
     return {
       ok: false,
       response: NextResponse.json(

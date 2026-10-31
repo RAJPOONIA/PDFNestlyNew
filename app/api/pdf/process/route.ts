@@ -7,9 +7,29 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { validateFileHeader } from '@/lib/pdf-utils';
+import {
+  encryptPdf,
+  decryptPdf,
+  compressPdf,
+  repairPdf,
+  resolveBinary,
+} from '@/lib/server-pdf-engine';
 
 const execFileAsync = promisify(execFile);
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB
+
+const SYSTEM_PATH = [
+  process.env.PATH || '',
+  '/usr/local/sbin',
+  '/usr/local/bin',
+  '/usr/sbin',
+  '/usr/bin',
+  '/sbin',
+  '/bin',
+  '/opt/homebrew/bin',
+]
+  .filter(Boolean)
+  .join(':');
 
 export async function POST(req: NextRequest) {
   let tempDir: string | null = null;
@@ -65,90 +85,14 @@ export async function POST(req: NextRequest) {
 
     await fs.writeFile(inputPath, inputBuffer);
 
-    let engineUsed = 'Ghostscript 9.55.0';
+    let engineUsed = 'PDFNestly Engine';
     let outputBytes: Uint8Array;
 
     if (operation === 'compress') {
       const level = String(formData.get('level') || 'ebook');
-      const presetConfig: Record<
-        string,
-        { setting: string; dpi: number; qFactor: string; label: string }
-      > = {
-        screen: {
-          setting: '/screen',
-          dpi: 72,
-          qFactor: '1.30',
-          label: '/screen 72 DPI High Compression',
-        },
-        ebook: {
-          setting: '/ebook',
-          dpi: 150,
-          qFactor: '0.65',
-          label: '/ebook 150 DPI Balanced',
-        },
-        printer: {
-          setting: '/printer',
-          dpi: 300,
-          qFactor: '0.25',
-          label: '/printer 300 DPI High Quality',
-        },
-        prepress: {
-          setting: '/prepress',
-          dpi: 300,
-          qFactor: '0.10',
-          label: '/prepress 300 DPI Archival',
-        },
-      };
-      const cfg = presetConfig[level] || presetConfig.ebook;
-
-      // Place overrides AFTER -dPDFSETTINGS so Ghostscript does not force 52KB sRGB ICC profile or Base-14 font bloat
-      await execFileAsync(
-        'gs',
-        [
-          '-sDEVICE=pdfwrite',
-          '-dCompatibilityLevel=1.5',
-          `-dPDFSETTINGS=${cfg.setting}`,
-          '-dNOPAUSE',
-          '-dQUIET',
-          '-dBATCH',
-          '-sColorConversionStrategy=LeaveColorUnchanged',
-          '-dEmbedAllFonts=false',
-          '-dSubsetFonts=true',
-          '-dCompressFonts=true',
-          '-dDetectDuplicateImages=true',
-          '-dDownsampleColorImages=true',
-          '-dDownsampleGrayImages=true',
-          '-dDownsampleMonoImages=true',
-          '-dColorImageDownsampleType=/Bicubic',
-          `-dColorImageResolution=${cfg.dpi}`,
-          `-dGrayImageResolution=${cfg.dpi}`,
-          `-dMonoImageResolution=${cfg.dpi * 2}`,
-          '-dColorImageDownsampleThreshold=1.0',
-          '-dGrayImageDownsampleThreshold=1.0',
-          '-dAutoFilterColorImages=false',
-          '-dColorImageFilter=/DCTEncode',
-          `-sOutputFile=${outputPath}`,
-          '-c',
-          `<< /ColorACSImageDict << /QFactor ${cfg.qFactor} /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> /ColorImageDict << /QFactor ${cfg.qFactor} /Blend 1 /HSamples [2 1 1 2] /VSamples [2 1 1 2] >> >> setdistillerparams`,
-          '-f',
-          inputPath,
-        ],
-        { timeout: 30000 }
-      );
-
-      const gsOut = await fs.readFile(outputPath);
-      const gsBytes = new Uint8Array(gsOut);
-
-      // Compact Ghostscript's output cross-reference table into PDF 1.5 Object Streams
-      try {
-        const gsDoc = await PDFDocument.load(gsBytes, { ignoreEncryption: true });
-        const gsCompacted = await gsDoc.save({ useObjectStreams: true });
-        outputBytes =
-          gsCompacted.byteLength < gsBytes.byteLength ? gsCompacted : gsBytes;
-      } catch {
-        outputBytes = gsBytes;
-      }
-      engineUsed = `Ghostscript 9.55 (${cfg.label})`;
+      const result = await compressPdf(inputPath, outputPath, level);
+      outputBytes = result.outputBytes;
+      engineUsed = result.engineUsed;
     } else if (operation === 'protect') {
       const userPassword = String(formData.get('userPassword') || '');
       const ownerPassword = String(
@@ -164,31 +108,16 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Compute PDF Revision 3 128-bit permission bitmask (negative signed 32-bit int per PDF spec)
-      let permissions = -3904; // base restricted mask
-      if (allowPrint) permissions += 4 + 2048;
-      if (allowCopy) permissions += 16;
+      engineUsed = await encryptPdf(inputPath, outputPath, {
+        userPassword,
+        ownerPassword,
+        keyLength: 256,
+        allowPrint,
+        allowCopy,
+      });
 
-      const gsArgs = [
-        '-sDEVICE=pdfwrite',
-        '-dCompatibilityLevel=1.5',
-        '-dNOPAUSE',
-        '-dQUIET',
-        '-dBATCH',
-        '-dEncryptionR=3',
-        '-dKeyLength=128',
-        `-dPermissions=${permissions}`,
-        `-sOwnerPassword=${ownerPassword}`,
-      ];
-      if (userPassword) {
-        gsArgs.push(`-sUserPassword=${userPassword}`);
-      }
-      gsArgs.push(`-sOutputFile=${outputPath}`, inputPath);
-
-      await execFileAsync('gs', gsArgs, { timeout: 30000 });
-      const gsOut = await fs.readFile(outputPath);
-      outputBytes = new Uint8Array(gsOut);
-      engineUsed = 'Ghostscript 9.55 (128-bit PDF Encryption)';
+      const outBuf = await fs.readFile(outputPath);
+      outputBytes = new Uint8Array(outBuf);
     } else if (operation === 'unlock') {
       const password = String(formData.get('password') || '');
       if (!password) {
@@ -199,64 +128,37 @@ export async function POST(req: NextRequest) {
       }
 
       try {
-        await execFileAsync(
-          'gs',
-          [
-            '-sDEVICE=pdfwrite',
-            '-dNOPAUSE',
-            '-dQUIET',
-            '-dBATCH',
-            `-sPDFPassword=${password}`,
-            `-sOutputFile=${outputPath}`,
-            inputPath,
-          ],
-          { timeout: 30000 }
-        );
-      } catch {
+        engineUsed = await decryptPdf(inputPath, outputPath, password);
+        const outBuf = await fs.readFile(outputPath);
+        outputBytes = new Uint8Array(outBuf);
+      } catch (unlockErr: unknown) {
+        const errorMsg =
+          unlockErr instanceof Error
+            ? unlockErr.message
+            : 'Unable to decrypt PDF with the provided password.';
+        const statusCode =
+          unlockErr && typeof unlockErr === 'object' && 'statusCode' in unlockErr
+            ? (unlockErr as { statusCode: number }).statusCode
+            : 401;
+
+        return NextResponse.json({ error: errorMsg }, { status: statusCode });
+      }
+    } else if (operation === 'repair') {
+      try {
+        const result = await repairPdf(inputPath, outputPath);
+        outputBytes = result.outputBytes;
+        engineUsed = result.engineUsed;
+      } catch (repairErr: unknown) {
         return NextResponse.json(
           {
             error:
-              'Unable to decrypt PDF: The supplied password is incorrect or the PDF uses an unsupported security handler.',
-          },
-          { status: 401 }
-        );
-      }
-
-      const gsOut = await fs.readFile(outputPath);
-      outputBytes = new Uint8Array(gsOut);
-      engineUsed = 'Ghostscript 9.55 Decryption Engine';
-    } else if (operation === 'repair') {
-      try {
-        await execFileAsync(
-          'gs',
-          [
-            '-sDEVICE=pdfwrite',
-            '-dNOPAUSE',
-            '-dQUIET',
-            '-dBATCH',
-            '-dPDFSTOPONERROR=false',
-            `-sOutputFile=${outputPath}`,
-            inputPath,
-          ],
-          { timeout: 30000 }
-        );
-        const gsOut = await fs.readFile(outputPath);
-        outputBytes = new Uint8Array(gsOut);
-        const recoveredDoc = await PDFDocument.load(outputBytes, { ignoreEncryption: true });
-        if (recoveredDoc.getPageCount() === 0) {
-          throw new Error('Zero pages recovered from damaged stream.');
-        }
-      } catch (repairErr) {
-        return NextResponse.json(
-          {
-            error: `Unable to recover readable PDF pages from damaged file: ${
-              repairErr instanceof Error ? repairErr.message : 'Corrupted stream'
-            }`,
+              repairErr instanceof Error
+                ? repairErr.message
+                : 'Unable to recover readable PDF pages from damaged file.',
           },
           { status: 422 }
         );
       }
-      engineUsed = 'Ghostscript 9.55 XRef & Stream Recovery Engine';
     } else if (operation === 'print-ready') {
       const bleedPt = Math.max(0, Math.min(72, Number(formData.get('bleedPt') || 18)));
       const addTrimMarks = formData.get('addTrimMarks') !== 'false';
@@ -302,25 +204,34 @@ export async function POST(req: NextRequest) {
       const markedBytes = await outDoc.save();
       await fs.writeFile(inputPath, Buffer.from(markedBytes));
 
-      // Step 2: Run Ghostscript /prepress 300 DPI optimization
-      await execFileAsync(
-        'gs',
-        [
-          '-sDEVICE=pdfwrite',
-          '-dCompatibilityLevel=1.5',
-          '-dPDFSETTINGS=/prepress',
-          '-dNOPAUSE',
-          '-dQUIET',
-          '-dBATCH',
-          '-dEmbedAllFonts=true',
-          `-sOutputFile=${outputPath}`,
-          inputPath,
-        ],
-        { timeout: 30000 }
-      );
-      const gsOut = await fs.readFile(outputPath);
-      outputBytes = new Uint8Array(gsOut);
-      engineUsed = 'pdf-lib Trim Marks + Ghostscript 9.55 (/prepress 300 DPI)';
+      // Step 2: Run Ghostscript /prepress 300 DPI optimization if available
+      const gsBin = await resolveBinary('gs');
+      if (gsBin) {
+        await execFileAsync(
+          gsBin,
+          [
+            '-sDEVICE=pdfwrite',
+            '-dCompatibilityLevel=1.5',
+            '-dPDFSETTINGS=/prepress',
+            '-dNOPAUSE',
+            '-dQUIET',
+            '-dBATCH',
+            '-dEmbedAllFonts=true',
+            `-sOutputFile=${outputPath}`,
+            inputPath,
+          ],
+          {
+            env: { ...process.env, PATH: SYSTEM_PATH },
+            timeout: 30000,
+          }
+        );
+        const gsOut = await fs.readFile(outputPath);
+        outputBytes = new Uint8Array(gsOut);
+        engineUsed = 'pdf-lib Trim Marks + Ghostscript (/prepress 300 DPI)';
+      } else {
+        outputBytes = markedBytes;
+        engineUsed = 'pdf-lib Trim Marks & Bleed Embedding Engine';
+      }
     } else {
       return NextResponse.json(
         { error: `Unsupported server operation: "${operation}".` },

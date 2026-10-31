@@ -13,7 +13,7 @@ import {
   ArrowUpRight,
   Filter,
 } from 'lucide-react';
-import { AnalyticsTimeRange } from '@/lib/platform-store';
+import { AnalyticsTimeRange } from '@/lib/roles';
 
 export interface CountryDemographicItem {
   country: string;

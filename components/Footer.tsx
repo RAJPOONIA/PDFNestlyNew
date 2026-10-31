@@ -7,8 +7,8 @@ import { PdfNestlyLogo } from './Logo';
 export function Footer() {
   const pathname = usePathname();
 
-  // Hide website footer completely inside standalone PDFNestly Studio routes
-  if (pathname === '/edit-pdf' || pathname === '/sign-pdf') {
+  // Hide public website footer inside standalone PDFNestly Studio routes and the separate Admin Portal
+  if (pathname === '/edit-pdf' || pathname === '/sign-pdf' || pathname.startsWith('/admin')) {
     return null;
   }
 

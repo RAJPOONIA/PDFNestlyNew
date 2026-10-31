@@ -3,9 +3,18 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import { PDF_TOOLS_REGISTRY, getToolBySlug } from './tools-registry';
 
+import {
+  UserRole,
+  ADMIN_ROLES,
+  isAdminRole,
+  isSuperAdmin,
+  AnalyticsTimeRange,
+} from './roles';
+
 export type AuthProviderType = 'google' | 'email';
-export type UserRole = 'user' | 'admin';
 export type AccountStatus = 'active' | 'suspended';
+export type { UserRole, AnalyticsTimeRange };
+export { ADMIN_ROLES, isAdminRole, isSuperAdmin };
 
 export type ActivityEventType =
   | 'signup_completed'
@@ -2642,8 +2651,6 @@ export interface CountryDemographicItem {
   percentage: number;
   eventsCount: number;
 }
-
-export type AnalyticsTimeRange = 'today' | '7d' | '28d' | '90d' | 'lifetime' | 'custom';
 
 export interface AdminAnalyticsDetailedResult {
   range: AnalyticsTimeRange;

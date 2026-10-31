@@ -16,6 +16,7 @@ import {
 import { PdfNestlyLogo } from './Logo';
 import { useTheme } from './ThemeProvider';
 import { useAuth } from './AuthProvider';
+import { isAdminRole } from '@/lib/roles';
 
 export function Navbar() {
   const pathname = usePathname();
@@ -24,8 +25,8 @@ export function Navbar() {
   const { user, isLoading, logout } = useAuth();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Hide website navigation completely inside standalone PDFNestly Studio routes
-  if (pathname === '/edit-pdf' || pathname === '/sign-pdf') {
+  // Hide public website navigation inside standalone PDFNestly Studio routes and the separate Admin Portal
+  if (pathname === '/edit-pdf' || pathname === '/sign-pdf' || pathname.startsWith('/admin')) {
     return null;
   }
 
@@ -106,9 +107,9 @@ export function Navbar() {
 
           {!isLoading && user ? (
             <div className="hidden sm:flex items-center gap-2">
-              {user.role === 'admin' && (
+              {isAdminRole(user.role) && (
                 <Link
-                  href="/admin"
+                  href="/admin/dashboard"
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap ${
                     pathname.startsWith('/admin')
                       ? 'bg-[#B91C1C] text-white border-[#B91C1C]'
@@ -216,9 +217,9 @@ export function Navbar() {
                   <User className="w-4 h-4 text-[#B91C1C]" />
                   <span>My Account ({user.displayName})</span>
                 </Link>
-                {user.role === 'admin' && (
+                {isAdminRole(user.role) && (
                   <Link
-                    href="/admin"
+                    href="/admin/dashboard"
                     onClick={() => setMobileMenuOpen(false)}
                     className="flex items-center justify-center gap-2 w-full px-4 py-2.5 text-xs font-semibold text-white bg-[#B91C1C] hover:bg-[#7F1D1D] rounded-lg"
                   >
