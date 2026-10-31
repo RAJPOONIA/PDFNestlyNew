@@ -2027,7 +2027,7 @@ function appendAdminAuditLogInternal(
     adminUid: string;
     adminEmail: string;
     action: string;
-    targetType: 'user' | 'session' | 'settings' | 'system';
+    targetType: 'user' | 'session' | 'settings' | 'system' | 'support_ticket';
     targetId: string;
     targetLabel: string;
     summary: string;

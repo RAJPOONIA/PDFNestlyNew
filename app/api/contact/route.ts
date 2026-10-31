@@ -45,6 +45,9 @@ export async function POST(req: NextRequest) {
 
     // Record activity event
     recordActivityAndJobEvent({
+      userId: null,
+      anonymousSessionId: null,
+      userEmail: ticket.email,
       eventType: 'page_viewed',
       toolSlug: null,
       toolName: 'Contact & Feedback Support',
@@ -52,11 +55,6 @@ export async function POST(req: NextRequest) {
       status: 'succeeded',
       country: resolvedCountry.country,
       countryCode: resolvedCountry.countryCode,
-      details: {
-        ticketId: ticket.id,
-        topic: ticket.topic,
-        userEmail: ticket.email,
-      },
     });
 
     return NextResponse.json({
